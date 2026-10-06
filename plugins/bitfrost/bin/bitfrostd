@@ -1,0 +1,21 @@
+#!/bin/sh
+# Copyright (C) 2026 Nick Germaine
+# SPDX-License-Identifier: GPL-3.0-only
+#
+# BitFrost is free software: you can share and change it under the GNU General
+# Public License, version 3 only. It comes with no warranty. See LICENSE.
+
+# Find Node 23.6+ even when a desktop app starts this without the login shell's PATH.
+HERE=$(dirname "$(readlink -f "$0")")
+
+usable() { [ -n "$1" ] && [ -x "$1" ] && "$1" -e 'const [a, b] = process.versions.node.split(".").map(Number); process.exit(a > 23 || (a === 23 && b >= 6) ? 0 : 1)' 2>/dev/null; }
+
+for candidate in "$BITFROST_NODE" "$(command -v node 2>/dev/null)" \
+  "$("${SHELL:-/bin/sh}" -lic 'command -v node' 2>/dev/null | tail -n 1)" /usr/bin/node /usr/local/bin/node; do
+  if usable "$candidate"; then NODE=$candidate; break; fi
+done
+if [ -z "$NODE" ]; then
+  echo "bitfrostd: no Node >= 23.6 found (set BITFROST_NODE)" >&2
+  exit 1
+fi
+exec "$NODE" --disable-warning=ExperimentalWarning "$HERE/../daemon/bitfrostd.ts" "$@"

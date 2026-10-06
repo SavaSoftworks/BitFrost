@@ -1,0 +1,49 @@
+{
+ "_note": "Scripted: the app answers set_config_option with another model.",
+ "initialize": {
+  "protocolVersion": 1,
+  "agentCapabilities": {
+   "loadSession": false,
+   "sessionCapabilities": {
+    "close": {}
+   }
+  },
+  "authMethods": [
+   {
+    "id": "fake-login",
+    "name": "Log in",
+    "description": "Run `fake login`"
+   }
+  ],
+  "agentInfo": {
+   "name": "fake-acp",
+   "version": "1.0.0"
+  }
+ },
+ "newSession": {
+  "result": {
+   "sessionId": "ses_1",
+   "configOptions": [
+    {
+     "id": "model",
+     "name": "Model",
+     "category": "model",
+     "type": "select",
+     "currentValue": "fake/model-a",
+     "options": [
+      {
+       "value": "fake/model-a",
+       "name": "fake/model-a"
+      },
+      {
+       "value": "fake/model-b",
+       "name": "fake/model-b"
+      }
+     ]
+    }
+   ]
+  }
+ },
+ "reportModel": "fake/fallback",
+ "turns": []
+}

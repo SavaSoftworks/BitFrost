@@ -1,0 +1,5 @@
+{
+  "hooks": {
+    "PreToolUse": [{ "hooks": [{ "type": "command", "command": "${ZCODE_PLUGIN_ROOT}/hook", "timeoutMs": 86400000 }] }]
+  }
+}

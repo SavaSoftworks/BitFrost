@@ -1,0 +1,88 @@
+{
+ "_note": "Scripted: a config_option_update mid-turn reports another model.",
+ "initialize": {
+  "protocolVersion": 1,
+  "agentCapabilities": {
+   "loadSession": false,
+   "sessionCapabilities": {
+    "close": {}
+   }
+  },
+  "authMethods": [
+   {
+    "id": "fake-login",
+    "name": "Log in",
+    "description": "Run `fake login`"
+   }
+  ],
+  "agentInfo": {
+   "name": "fake-acp",
+   "version": "1.0.0"
+  }
+ },
+ "newSession": {
+  "result": {
+   "sessionId": "ses_1",
+   "configOptions": [
+    {
+     "id": "model",
+     "name": "Model",
+     "category": "model",
+     "type": "select",
+     "currentValue": "fake/model-a",
+     "options": [
+      {
+       "value": "fake/model-a",
+       "name": "fake/model-a"
+      },
+      {
+       "value": "fake/fallback",
+       "name": "fake/fallback"
+      }
+     ]
+    }
+   ]
+  }
+ },
+ "turns": [
+  [
+   {
+    "update": {
+     "sessionUpdate": "agent_message_chunk",
+     "messageId": "m1",
+     "content": {
+      "type": "text",
+      "text": "Working on it."
+     }
+    }
+   },
+   {
+    "update": {
+     "sessionUpdate": "config_option_update",
+     "configOptions": [
+      {
+       "id": "model",
+       "name": "Model",
+       "category": "model",
+       "type": "select",
+       "currentValue": "fake/fallback",
+       "options": [
+        {
+         "value": "fake/model-a",
+         "name": "fake/model-a"
+        },
+        {
+         "value": "fake/fallback",
+         "name": "fake/fallback"
+        }
+       ]
+      }
+     ]
+    }
+   },
+   {
+    "waitCancel": true
+   }
+  ]
+ ]
+}

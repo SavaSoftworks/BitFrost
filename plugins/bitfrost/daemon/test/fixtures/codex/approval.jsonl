@@ -1,0 +1,7 @@
+{"method":"turn/started","params":{"threadId":"thr1","turn":{"id":"turn1"}}}
+{"id":"req-approval-1","method":"item/commandExecution/requestApproval","params":{"threadId":"thr1","itemId":"item-cmd-1","command":"/usr/bin/zsh -lc 'ls -la'","cwd":"/tmp/bitfrost-lab","reason":"list the directory contents"}}
+{"method":"item/started","params":{"threadId":"thr1","turnId":"turn1","item":{"id":"item-cmd-1","type":"commandExecution","command":"/usr/bin/zsh -lc 'ls -la'","cwd":"/tmp/bitfrost-lab","commandActions":[{"type":"listFiles","path":"/tmp/bitfrost-lab"}]}}}
+{"method":"item/completed","params":{"threadId":"thr1","turnId":"turn1","item":{"id":"item-cmd-1","type":"commandExecution","command":"/usr/bin/zsh -lc 'ls -la'","cwd":"/tmp/bitfrost-lab","aggregatedOutput":"total 4\ndrwxr-xr-x 2 user user 4096 Sep 30 10:00 .\n","exitCode":0,"status":"completed","durationMs":25,"commandActions":[{"type":"listFiles","path":"/tmp/bitfrost-lab"}]}}}
+{"method":"thread/tokenUsage/updated","params":{"threadId":"thr1","tokenUsage":{"last":{"inputTokens":1200,"cachedInputTokens":300,"outputTokens":45},"total":{"inputTokens":9999,"cachedInputTokens":9999,"outputTokens":9999}}}}
+{"method":"item/completed","params":{"threadId":"thr1","turnId":"turn1","item":{"id":"item-msg-1","type":"agentMessage","text":"It listed the directory: 2 entries."}}}
+{"method":"turn/completed","params":{"threadId":"thr1","turn":{"id":"turn1","status":"completed"}}}

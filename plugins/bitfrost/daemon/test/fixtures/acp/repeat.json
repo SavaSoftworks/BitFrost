@@ -1,0 +1,312 @@
+{
+ "_note": "Scripted: the same command asked about twice, then another command, then the same yes/no form twice.",
+ "initialize": {
+  "protocolVersion": 1,
+  "agentCapabilities": {
+   "loadSession": false,
+   "sessionCapabilities": {
+    "close": {}
+   }
+  },
+  "authMethods": [
+   {
+    "id": "fake-login",
+    "name": "Log in",
+    "description": "Run `fake login`"
+   }
+  ],
+  "agentInfo": {
+   "name": "fake-acp",
+   "version": "1.0.0"
+  }
+ },
+ "newSession": {
+  "result": {
+   "sessionId": "ses_1",
+   "configOptions": [
+    {
+     "id": "model",
+     "name": "Model",
+     "category": "model",
+     "type": "select",
+     "currentValue": "fake/model-a",
+     "options": [
+      {
+       "value": "fake/model-a",
+       "name": "fake/model-a"
+      }
+     ]
+    }
+   ]
+  }
+ },
+ "turns": [
+  [
+   {
+    "update": {
+     "sessionUpdate": "tool_call",
+     "toolCallId": "call_1",
+     "title": "ls -a",
+     "kind": "execute",
+     "status": "pending",
+     "rawInput": {
+      "command": "ls -a"
+     }
+    }
+   },
+   {
+    "ask": "session/request_permission",
+    "params": {
+     "sessionId": "$SESSION",
+     "toolCall": {
+      "toolCallId": "call_1",
+      "title": "ls -a",
+      "kind": "execute",
+      "status": "pending",
+      "rawInput": {
+       "command": "ls -a"
+      }
+     },
+     "options": [
+      {
+       "optionId": "proceed_once",
+       "kind": "allow_once",
+       "name": "Allow"
+      },
+      {
+       "optionId": "proceed_always",
+       "kind": "allow_always",
+       "name": "Allow always"
+      },
+      {
+       "optionId": "cancel",
+       "kind": "reject_once",
+       "name": "Reject"
+      }
+     ]
+    },
+    "then": {
+     "allow_once": [
+      {
+       "update": {
+        "sessionUpdate": "tool_call_update",
+        "toolCallId": "call_1",
+        "status": "completed",
+        "content": [
+         {
+          "type": "content",
+          "content": {
+           "type": "text",
+           "text": "ok"
+          }
+         }
+        ]
+       }
+      }
+     ],
+     "reject_once": [
+      {
+       "update": {
+        "sessionUpdate": "tool_call_update",
+        "toolCallId": "call_1",
+        "status": "failed"
+       }
+      }
+     ]
+    }
+   },
+   {
+    "update": {
+     "sessionUpdate": "tool_call",
+     "toolCallId": "call_2",
+     "title": "ls -a",
+     "kind": "execute",
+     "status": "pending",
+     "rawInput": {
+      "command": "ls -a"
+     }
+    }
+   },
+   {
+    "ask": "session/request_permission",
+    "params": {
+     "sessionId": "$SESSION",
+     "toolCall": {
+      "toolCallId": "call_2",
+      "title": "ls -a",
+      "kind": "execute",
+      "status": "pending",
+      "rawInput": {
+       "command": "ls -a"
+      }
+     },
+     "options": [
+      {
+       "optionId": "proceed_once",
+       "kind": "allow_once",
+       "name": "Allow"
+      },
+      {
+       "optionId": "proceed_always",
+       "kind": "allow_always",
+       "name": "Allow always"
+      },
+      {
+       "optionId": "cancel",
+       "kind": "reject_once",
+       "name": "Reject"
+      }
+     ]
+    },
+    "then": {
+     "allow_once": [
+      {
+       "update": {
+        "sessionUpdate": "tool_call_update",
+        "toolCallId": "call_2",
+        "status": "completed",
+        "content": [
+         {
+          "type": "content",
+          "content": {
+           "type": "text",
+           "text": "ok"
+          }
+         }
+        ]
+       }
+      }
+     ],
+     "reject_once": [
+      {
+       "update": {
+        "sessionUpdate": "tool_call_update",
+        "toolCallId": "call_2",
+        "status": "failed"
+       }
+      }
+     ]
+    }
+   },
+   {
+    "update": {
+     "sessionUpdate": "tool_call",
+     "toolCallId": "call_3",
+     "title": "ls -la",
+     "kind": "execute",
+     "status": "pending",
+     "rawInput": {
+      "command": "ls -la"
+     }
+    }
+   },
+   {
+    "ask": "session/request_permission",
+    "params": {
+     "sessionId": "$SESSION",
+     "toolCall": {
+      "toolCallId": "call_3",
+      "title": "ls -la",
+      "kind": "execute",
+      "status": "pending",
+      "rawInput": {
+       "command": "ls -la"
+      }
+     },
+     "options": [
+      {
+       "optionId": "proceed_once",
+       "kind": "allow_once",
+       "name": "Allow"
+      },
+      {
+       "optionId": "proceed_always",
+       "kind": "allow_always",
+       "name": "Allow always"
+      },
+      {
+       "optionId": "cancel",
+       "kind": "reject_once",
+       "name": "Reject"
+      }
+     ]
+    },
+    "then": {
+     "allow_once": [
+      {
+       "update": {
+        "sessionUpdate": "tool_call_update",
+        "toolCallId": "call_3",
+        "status": "completed",
+        "content": [
+         {
+          "type": "content",
+          "content": {
+           "type": "text",
+           "text": "ok"
+          }
+         }
+        ]
+       }
+      }
+     ],
+     "reject_once": [
+      {
+       "update": {
+        "sessionUpdate": "tool_call_update",
+        "toolCallId": "call_3",
+        "status": "failed"
+       }
+      }
+     ]
+    }
+   },
+   {
+    "ask": "elicitation/create",
+    "params": {
+     "sessionId": "$SESSION",
+     "mode": "form",
+     "message": "Allow tool: write\nPath: a.md",
+     "requestedSchema": {
+      "type": "object",
+      "properties": {
+       "value": {
+        "type": "string",
+        "enum": [
+         "Approve",
+         "Deny"
+        ]
+       }
+      },
+      "required": [
+       "value"
+      ]
+     }
+    }
+   },
+   {
+    "ask": "elicitation/create",
+    "params": {
+     "sessionId": "$SESSION",
+     "mode": "form",
+     "message": "Allow tool: write\nPath: a.md",
+     "requestedSchema": {
+      "type": "object",
+      "properties": {
+       "value": {
+        "type": "string",
+        "enum": [
+         "Approve",
+         "Deny"
+        ]
+       }
+      },
+      "required": [
+       "value"
+      ]
+     }
+    }
+   }
+  ]
+ ]
+}

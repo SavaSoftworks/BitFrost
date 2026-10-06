@@ -1,0 +1,389 @@
+{
+ "_note": "Scripted, with the tool call shapes opencode 1.18 sends.",
+ "initialize": {
+  "protocolVersion": 1,
+  "agentCapabilities": {
+   "loadSession": false,
+   "sessionCapabilities": {
+    "close": {}
+   }
+  },
+  "authMethods": [
+   {
+    "id": "fake-login",
+    "name": "Log in",
+    "description": "Run `fake login`"
+   }
+  ],
+  "agentInfo": {
+   "name": "fake-acp",
+   "version": "1.0.0"
+  }
+ },
+ "newSession": {
+  "result": {
+   "sessionId": "ses_1",
+   "configOptions": [
+    {
+     "id": "model",
+     "name": "Model",
+     "category": "model",
+     "type": "select",
+     "currentValue": "fake/model-a",
+     "options": [
+      {
+       "value": "fake/model-a",
+       "name": "fake/model-a"
+      }
+     ]
+    },
+    {
+     "id": "effort",
+     "name": "Effort",
+     "category": "thought_level",
+     "type": "select",
+     "currentValue": "medium",
+     "options": [
+      {
+       "value": "low",
+       "name": "low"
+      },
+      {
+       "value": "medium",
+       "name": "medium"
+      },
+      {
+       "value": "high",
+       "name": "high"
+      }
+     ]
+    }
+   ]
+  }
+ },
+ "turns": [
+  [
+   {
+    "update": {
+     "sessionUpdate": "agent_thought_chunk",
+     "messageId": "r1",
+     "content": {
+      "type": "text",
+      "text": "Let me "
+     }
+    }
+   },
+   {
+    "update": {
+     "sessionUpdate": "agent_thought_chunk",
+     "messageId": "r1",
+     "content": {
+      "type": "text",
+      "text": "look."
+     }
+    }
+   },
+   {
+    "update": {
+     "sessionUpdate": "agent_message_chunk",
+     "messageId": "m1",
+     "content": {
+      "type": "text",
+      "text": "I'll list "
+     }
+    }
+   },
+   {
+    "update": {
+     "sessionUpdate": "agent_message_chunk",
+     "messageId": "m1",
+     "content": {
+      "type": "text",
+      "text": "the files."
+     }
+    }
+   },
+   {
+    "update": {
+     "sessionUpdate": "tool_call",
+     "toolCallId": "call_read",
+     "title": "read",
+     "kind": "read",
+     "status": "pending",
+     "locations": [],
+     "rawInput": {}
+    }
+   },
+   {
+    "update": {
+     "sessionUpdate": "tool_call_update",
+     "toolCallId": "call_read",
+     "status": "in_progress",
+     "kind": "read",
+     "title": "hello.txt",
+     "rawInput": {
+      "filePath": "/w/hello.txt"
+     }
+    }
+   },
+   {
+    "update": {
+     "sessionUpdate": "tool_call_update",
+     "toolCallId": "call_read",
+     "status": "completed",
+     "title": "hello.txt",
+     "content": [
+      {
+       "type": "content",
+       "content": {
+        "type": "text",
+        "text": "hello"
+       }
+      }
+     ],
+     "rawOutput": {
+      "output": "<content>1: hello</content>"
+     }
+    }
+   },
+   {
+    "update": {
+     "sessionUpdate": "tool_call",
+     "toolCallId": "call_ls",
+     "title": "bash",
+     "kind": "execute",
+     "status": "pending",
+     "locations": [
+      {
+       "path": "/w"
+      }
+     ],
+     "rawInput": {
+      "cwd": "/w"
+     }
+    }
+   },
+   {
+    "update": {
+     "sessionUpdate": "tool_call_update",
+     "toolCallId": "call_ls",
+     "status": "in_progress",
+     "kind": "execute",
+     "title": "ls -a",
+     "rawInput": {
+      "command": "ls -a",
+      "description": "List files",
+      "cwd": "/w"
+     }
+    }
+   },
+   {
+    "ask": "session/request_permission",
+    "params": {
+     "sessionId": "$SESSION",
+     "toolCall": {
+      "toolCallId": "call_ls",
+      "title": "ls -a",
+      "kind": "execute",
+      "status": "pending",
+      "locations": [],
+      "rawInput": {
+       "command": "ls -a"
+      }
+     },
+     "options": [
+      {
+       "optionId": "proceed_once",
+       "kind": "allow_once",
+       "name": "Allow"
+      },
+      {
+       "optionId": "proceed_always",
+       "kind": "allow_always",
+       "name": "Allow always"
+      },
+      {
+       "optionId": "cancel",
+       "kind": "reject_once",
+       "name": "Reject"
+      }
+     ]
+    },
+    "then": {
+     "allow_once": [
+      {
+       "update": {
+        "sessionUpdate": "tool_call_update",
+        "toolCallId": "call_ls",
+        "status": "completed",
+        "title": "ls -a",
+        "content": [
+         {
+          "type": "content",
+          "content": {
+           "type": "text",
+           "text": ".\n..\nhello.txt\n"
+          }
+         }
+        ],
+        "rawOutput": {
+         "output": ".\n..\nhello.txt\n",
+         "metadata": {
+          "exit": 0
+         }
+        }
+       }
+      }
+     ],
+     "reject_once": [
+      {
+       "update": {
+        "sessionUpdate": "tool_call_update",
+        "toolCallId": "call_ls",
+        "status": "failed",
+        "title": "ls -a",
+        "content": [
+         {
+          "type": "content",
+          "content": {
+           "type": "text",
+           "text": "The user rejected permission to use this specific tool call."
+          }
+         }
+        ],
+        "rawOutput": {
+         "error": "The user rejected permission to use this specific tool call."
+        }
+       }
+      }
+     ]
+    }
+   },
+   {
+    "update": {
+     "sessionUpdate": "tool_call",
+     "toolCallId": "call_edit",
+     "title": "edit",
+     "kind": "edit",
+     "status": "pending",
+     "locations": [],
+     "rawInput": {}
+    }
+   },
+   {
+    "update": {
+     "sessionUpdate": "tool_call_update",
+     "toolCallId": "call_edit",
+     "status": "completed",
+     "title": "hello.txt",
+     "rawInput": {
+      "filePath": "/w/hello.txt",
+      "oldString": "hello",
+      "newString": "hello world"
+     },
+     "content": [
+      {
+       "type": "content",
+       "content": {
+        "type": "text",
+        "text": "Edit applied successfully."
+       }
+      },
+      {
+       "type": "diff",
+       "path": "/w/hello.txt",
+       "oldText": "hello",
+       "newText": "hello world"
+      }
+     ]
+    }
+   },
+   {
+    "update": {
+     "sessionUpdate": "tool_call",
+     "toolCallId": "call_new",
+     "title": "write",
+     "kind": "edit",
+     "status": "completed",
+     "locations": [
+      {
+       "path": "/w/new.txt"
+      }
+     ],
+     "rawInput": {
+      "path": "/w/new.txt",
+      "content": "a\nb\n"
+     },
+     "content": [
+      {
+       "type": "diff",
+       "path": "/w/new.txt",
+       "oldText": null,
+       "newText": "a\nb\n"
+      }
+     ]
+    }
+   },
+   {
+    "update": {
+     "sessionUpdate": "plan",
+     "entries": [
+      {
+       "content": "List the files",
+       "priority": "high",
+       "status": "completed"
+      },
+      {
+       "content": "Report back",
+       "priority": "medium",
+       "status": "in_progress"
+      }
+     ]
+    }
+   },
+   {
+    "update": {
+     "sessionUpdate": "usage_update",
+     "used": 12000,
+     "size": 200000,
+     "cost": {
+      "amount": 0.01,
+      "currency": "USD"
+     }
+    }
+   },
+   {
+    "update": {
+     "sessionUpdate": "agent_message_chunk",
+     "messageId": "m2",
+     "content": {
+      "type": "text",
+      "text": "Done."
+     }
+    }
+   },
+   {
+    "respond": {
+     "stopReason": "end_turn",
+     "usage": {
+      "inputTokens": 50000,
+      "outputTokens": 42,
+      "totalTokens": 50042
+     }
+    }
+   }
+  ],
+  [
+   {
+    "update": {
+     "sessionUpdate": "agent_message_chunk",
+     "messageId": "m3",
+     "content": {
+      "type": "text",
+      "text": "Again."
+     }
+    }
+   }
+  ]
+ ]
+}

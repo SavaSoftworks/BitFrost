@@ -1,0 +1,1 @@
+{ "name": "bitfrost-bridge", "version": "1", "description": "Passes GLM's permission requests and questions to bitfrost, in runs bitfrost starts. Does nothing otherwise." }

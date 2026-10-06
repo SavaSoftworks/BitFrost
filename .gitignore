@@ -1,0 +1,7 @@
+node_modules/
+.claude-plugin/types/
+**/.claude-plugin/types/
+docs/
+research/
+dist/
+.idea/

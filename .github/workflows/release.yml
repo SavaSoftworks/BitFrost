@@ -1,0 +1,119 @@
+# Copyright (C) 2026 Nick Germaine
+# SPDX-License-Identifier: GPL-3.0-only
+#
+# BitFrost is free software: you can share and change it under the GNU General
+# Public License, version 3 only. It comes with no warranty. See LICENSE.
+
+# Tests every PR and push to main. Releases when plugin.json has a new version.
+name: release
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# PR runs cancel older ones. Main pushes never do, so no release gets dropped.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Install Claude Code (for the plugin test kit)
+        run: npm install -g @anthropic-ai/claude-code
+      - run: claude plugin validate plugins/bitfrost
+      - run: npm test
+      - name: Check the shell scripts
+        run: shellcheck release/install.sh release/build.sh plugins/bitfrost/bin/bitfrostd
+      - name: Build the tarball
+        run: release/build.sh
+      - name: Install from the tarball into a throwaway home
+        run: |
+          home=$(mktemp -d)
+          version=$(node -p 'require("./plugins/bitfrost/.claude-plugin/plugin.json").version')
+          HOME=$home sh release/install.sh --from "dist/bitfrost-$version.tar.gz"
+          test -x "$home/.local/bin/bitfrost"
+          HOME=$home "$home/.local/bin/bitfrost" socket
+          HOME=$home claude plugin list | grep -q 'bitfrost@bitfrost'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tarball
+          path: dist/
+
+  # install.sh must also work with macOS's BSD tools.
+  install-macos:
+    needs: test
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: npm install -g @anthropic-ai/claude-code
+      - uses: actions/download-artifact@v4
+        with:
+          name: tarball
+          path: dist/
+      - name: Install into a throwaway home, then again (swaps the link)
+        run: |
+          home=$(mktemp -d)
+          version=$(node -p 'require("./plugins/bitfrost/.claude-plugin/plugin.json").version')
+          HOME=$home sh release/install.sh --from "dist/bitfrost-$version.tar.gz"
+          HOME=$home sh release/install.sh --from "dist/bitfrost-$version.tar.gz"
+          test -L "$home/.local/share/bitfrost/current"
+          HOME=$home "$home/.local/bin/bitfrost" socket
+          HOME=$home claude plugin list | grep -q 'bitfrost@bitfrost'
+
+  release:
+    needs: [test, install-macos]
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Is this version released yet?
+        id: check
+        run: |
+          version=$(node -p 'require("./plugins/bitfrost/.claude-plugin/plugin.json").version')
+          echo "version=$version" >>"$GITHUB_OUTPUT"
+          if git ls-remote --exit-code --tags origin "refs/tags/v$version" >/dev/null; then
+            echo "v$version is already released; bump the version in plugin.json to make a new one"
+            echo "new=false" >>"$GITHUB_OUTPUT"
+          else
+            echo "new=true" >>"$GITHUB_OUTPUT"
+          fi
+      - uses: actions/download-artifact@v4
+        if: steps.check.outputs.new == 'true'
+        with:
+          name: tarball
+          path: dist/
+      - name: Make the release
+        if: steps.check.outputs.new == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.check.outputs.version }}
+        run: |
+          cp release/install.sh dist/install.sh
+          gh release create "v$VERSION" \
+            --target "$GITHUB_SHA" \
+            --title "bitfrost $VERSION" \
+            --generate-notes \
+            "dist/bitfrost-$VERSION.tar.gz" \
+            "dist/bitfrost-$VERSION.tar.gz.sha256" \
+            dist/install.sh

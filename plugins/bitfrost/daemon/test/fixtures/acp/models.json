@@ -1,0 +1,150 @@
+{
+ "_note": "Scripted. Model picker grouped by route; thought levels per model, as opencode reports them.",
+ "initialize": {
+  "protocolVersion": 1,
+  "agentCapabilities": {
+   "loadSession": false,
+   "sessionCapabilities": {
+    "close": {}
+   }
+  },
+  "authMethods": [
+   {
+    "id": "fake-login",
+    "name": "Log in",
+    "description": "Run `fake login`"
+   }
+  ],
+  "agentInfo": {
+   "name": "fake-acp",
+   "version": "1.0.0"
+  }
+ },
+ "newSession": {
+  "result": {
+   "sessionId": "ses_1",
+   "configOptions": [
+    {
+     "id": "model",
+     "name": "Model",
+     "category": "model",
+     "type": "select",
+     "currentValue": "opencode/big-pickle",
+     "options": [
+      {
+       "group": "go",
+       "name": "OpenCode Go",
+       "options": [
+        {
+         "value": "opencode-go/deepseek-v4-flash",
+         "name": "OpenCode Go/DeepSeek V4 Flash"
+        },
+        {
+         "value": "opencode-go/glm-5.3",
+         "name": "OpenCode Go/GLM-5.3"
+        }
+       ]
+      },
+      {
+       "group": "other",
+       "name": "Other",
+       "options": [
+        {
+         "value": "anthropic/claude-opus-5",
+         "name": "Anthropic/Claude Opus 5"
+        },
+        {
+         "value": "opencode/big-pickle",
+         "name": "OpenCode Zen/Big Pickle"
+        },
+        {
+         "value": "openrouter/acme/widget-1",
+         "name": "OpenRouter/Widget 1"
+        }
+       ]
+      }
+     ]
+    },
+    {
+     "id": "mode",
+     "name": "Session Mode",
+     "category": "mode",
+     "type": "select",
+     "currentValue": "build",
+     "options": [
+      {
+       "value": "build",
+       "name": "build"
+      },
+      {
+       "value": "plan",
+       "name": "plan"
+      }
+     ]
+    }
+   ]
+  }
+ },
+ "levels": {
+  "opencode-go/deepseek-v4-flash": {
+   "id": "effort",
+   "name": "Effort",
+   "category": "thought_level",
+   "type": "select",
+   "currentValue": "low",
+   "options": [
+    {
+     "value": "low",
+     "name": "low"
+    },
+    {
+     "value": "high",
+     "name": "high"
+    },
+    {
+     "value": "max",
+     "name": "max"
+    },
+    {
+     "value": "default",
+     "name": "default"
+    }
+   ]
+  },
+  "opencode-go/glm-5.3": {
+   "id": "effort",
+   "name": "Effort",
+   "category": "thought_level",
+   "type": "select",
+   "currentValue": "high",
+   "options": [
+    {
+     "value": "high",
+     "name": "high"
+    },
+    {
+     "value": "max",
+     "name": "max"
+    },
+    {
+     "value": "default",
+     "name": "default"
+    }
+   ]
+  }
+ },
+ "turns": [
+  [
+   {
+    "update": {
+     "sessionUpdate": "agent_message_chunk",
+     "messageId": "m1",
+     "content": {
+      "type": "text",
+      "text": "Ready."
+     }
+    }
+   }
+  ]
+ ]
+}

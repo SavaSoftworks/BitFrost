@@ -1,0 +1,11 @@
+{
+  "name": "bitfrost",
+  "private": true,
+  "type": "module",
+  "license": "GPL-3.0-only",
+  "scripts": {
+    "test": "npm run test:daemon && npm run test:plugin",
+    "test:daemon": "node --test --disable-warning=ExperimentalWarning 'plugins/bitfrost/daemon/test/*.spec.ts'",
+    "test:plugin": "claude plugin test plugins/bitfrost"
+  }
+}

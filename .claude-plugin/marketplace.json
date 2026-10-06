@@ -1,0 +1,13 @@
+{
+  "name": "bitfrost",
+  "owner": {
+    "name": "Nick Germaine"
+  },
+  "plugins": [
+    {
+      "name": "bitfrost",
+      "source": "./plugins/bitfrost",
+      "description": "Use Codex, ZCode and ACP apps (opencode, Oh My Pi, Gemini CLI) as Claude Code subagents"
+    }
+  ]
+}

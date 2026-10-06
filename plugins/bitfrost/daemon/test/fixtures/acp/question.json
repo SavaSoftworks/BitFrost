@@ -1,0 +1,198 @@
+{
+ "_note": "Scripted. The yes/no form is the shape oh-my-pi 17 sends for a tool approval (from its source).",
+ "initialize": {
+  "protocolVersion": 1,
+  "agentCapabilities": {
+   "loadSession": false,
+   "sessionCapabilities": {
+    "close": {}
+   }
+  },
+  "authMethods": [
+   {
+    "id": "fake-login",
+    "name": "Log in",
+    "description": "Run `fake login`"
+   }
+  ],
+  "agentInfo": {
+   "name": "fake-acp",
+   "version": "1.0.0"
+  }
+ },
+ "newSession": {
+  "result": {
+   "sessionId": "ses_1",
+   "configOptions": [
+    {
+     "id": "model",
+     "name": "Model",
+     "category": "model",
+     "type": "select",
+     "currentValue": "fake/model-a",
+     "options": [
+      {
+       "value": "fake/model-a",
+       "name": "fake/model-a"
+      }
+     ]
+    },
+    {
+     "id": "thinking",
+     "name": "Effort",
+     "category": "thought_level",
+     "type": "select",
+     "currentValue": "off",
+     "options": [
+      {
+       "value": "off",
+       "name": "off"
+      },
+      {
+       "value": "low",
+       "name": "low"
+      },
+      {
+       "value": "high",
+       "name": "high"
+      }
+     ]
+    }
+   ]
+  }
+ },
+ "turns": [
+  [
+   {
+    "ask": "elicitation/create",
+    "params": {
+     "sessionId": "$SESSION",
+     "mode": "form",
+     "message": "How should I name the file?",
+     "requestedSchema": {
+      "type": "object",
+      "properties": {
+       "name": {
+        "type": "string",
+        "title": "File name",
+        "oneOf": [
+         {
+          "const": "a.txt",
+          "title": "Short"
+         },
+         {
+          "const": "b.txt",
+          "title": "Long",
+          "description": "A longer name"
+         }
+        ]
+       },
+       "count": {
+        "type": "integer",
+        "title": "How many"
+       },
+       "force": {
+        "type": "boolean",
+        "title": "Overwrite"
+       }
+      },
+      "required": [
+       "name"
+      ]
+     }
+    },
+    "then": {
+     "accept": [
+      {
+       "update": {
+        "sessionUpdate": "agent_message_chunk",
+        "messageId": "m1",
+        "content": {
+         "type": "text",
+         "text": "Named it."
+        }
+       }
+      }
+     ],
+     "decline": [
+      {
+       "update": {
+        "sessionUpdate": "agent_message_chunk",
+        "messageId": "m1",
+        "content": {
+         "type": "text",
+         "text": "No answer."
+        }
+       }
+      }
+     ]
+    }
+   },
+   {
+    "update": {
+     "sessionUpdate": "tool_call",
+     "toolCallId": "call_write",
+     "title": "write: notes.md",
+     "kind": "edit",
+     "status": "pending",
+     "rawInput": {
+      "path": "notes.md",
+      "content": "x\n"
+     }
+    }
+   },
+   {
+    "ask": "elicitation/create",
+    "params": {
+     "sessionId": "$SESSION",
+     "mode": "form",
+     "message": "Allow tool: write\nPath: notes.md",
+     "requestedSchema": {
+      "type": "object",
+      "properties": {
+       "value": {
+        "type": "string",
+        "enum": [
+         "Approve",
+         "Deny"
+        ]
+       }
+      },
+      "required": [
+       "value"
+      ]
+     }
+    },
+    "then": {
+     "accept": [
+      {
+       "update": {
+        "sessionUpdate": "tool_call_update",
+        "toolCallId": "call_write",
+        "status": "completed",
+        "content": [
+         {
+          "type": "diff",
+          "path": "notes.md",
+          "oldText": null,
+          "newText": "x\n"
+         }
+        ]
+       }
+      }
+     ]
+    }
+   },
+   {
+    "update": {
+     "sessionUpdate": "agent_message_chunk",
+     "messageId": "m2",
+     "content": {
+      "type": "text",
+      "text": "Wrote it."
+     }
+    }
+   }
+  ]
+ ]
+}

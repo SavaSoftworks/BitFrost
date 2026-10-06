@@ -1,0 +1,251 @@
+{
+ "_note": "Recorded from opencode 1.18.32 over ACP (a real run, trimmed to two models): the command asks permission, the answer is Reject, and opencode ends the turn.",
+ "initialize": {
+  "protocolVersion": 1,
+  "agentCapabilities": {
+   "loadSession": true,
+   "mcpCapabilities": {
+    "http": true,
+    "sse": true
+   },
+   "promptCapabilities": {
+    "embeddedContext": true,
+    "image": true
+   },
+   "sessionCapabilities": {
+    "close": {},
+    "fork": {},
+    "list": {},
+    "resume": {}
+   }
+  },
+  "authMethods": [
+   {
+    "description": "Run `opencode auth login` in the terminal",
+    "name": "Login with opencode",
+    "id": "opencode-login"
+   }
+  ],
+  "agentInfo": {
+   "name": "OpenCode",
+   "version": "1.18.32"
+  }
+ },
+ "newSession": {
+  "result": {
+   "sessionId": "$SESSION",
+   "configOptions": [
+    {
+     "id": "model",
+     "name": "Model",
+     "category": "model",
+     "type": "select",
+     "currentValue": "opencode/big-pickle",
+     "options": [
+      {
+       "value": "opencode-go/deepseek-v4-flash",
+       "name": "OpenCode Go/DeepSeek V4 Flash"
+      },
+      {
+       "value": "opencode/big-pickle",
+       "name": "OpenCode Zen/Big Pickle"
+      }
+     ]
+    },
+    {
+     "id": "mode",
+     "name": "Session Mode",
+     "category": "mode",
+     "type": "select",
+     "currentValue": "build",
+     "options": [
+      {
+       "value": "build",
+       "name": "build",
+       "description": "The default agent. Executes tools based on configured permissions."
+      },
+      {
+       "value": "plan",
+       "name": "plan",
+       "description": "Plan mode. Disallows all edit tools."
+      },
+      {
+       "value": "psi",
+       "name": "psi",
+       "description": "Main orchestrator"
+      }
+     ]
+    }
+   ]
+  }
+ },
+ "levels": {
+  "opencode-go/deepseek-v4-flash": {
+   "id": "effort",
+   "name": "Effort",
+   "description": "Available effort levels for this model",
+   "category": "thought_level",
+   "type": "select",
+   "currentValue": "low",
+   "options": [
+    {
+     "value": "low",
+     "name": "Low"
+    },
+    {
+     "value": "high",
+     "name": "High"
+    },
+    {
+     "value": "max",
+     "name": "Max"
+    },
+    {
+     "value": "default",
+     "name": "Default"
+    }
+   ]
+  }
+ },
+ "turns": [
+  [
+   {
+    "update": {
+     "sessionUpdate": "tool_call",
+     "toolCallId": "call_022a13070fdb4aa0bf017ad0",
+     "title": "bash",
+     "kind": "execute",
+     "status": "pending",
+     "locations": [
+      {
+       "path": "/tmp/acp-probe"
+      }
+     ],
+     "rawInput": {
+      "cwd": "/tmp/acp-probe"
+     }
+    }
+   },
+   {
+    "update": {
+     "sessionUpdate": "tool_call_update",
+     "toolCallId": "call_022a13070fdb4aa0bf017ad0",
+     "status": "in_progress",
+     "kind": "execute",
+     "title": "ls -a",
+     "locations": [
+      {
+       "path": "/tmp/acp-probe"
+      }
+     ],
+     "rawInput": {
+      "command": "ls -a",
+      "cwd": "/tmp/acp-probe"
+     }
+    }
+   },
+   {
+    "ask": "session/request_permission",
+    "params": {
+     "sessionId": "$SESSION",
+     "toolCall": {
+      "toolCallId": "call_022a13070fdb4aa0bf017ad0",
+      "title": "ls -a",
+      "kind": "execute",
+      "status": "pending",
+      "locations": [],
+      "rawInput": {
+       "command": "ls -a"
+      }
+     },
+     "options": [
+      {
+       "optionId": "once",
+       "kind": "allow_once",
+       "name": "Allow once"
+      },
+      {
+       "optionId": "always",
+       "kind": "allow_always",
+       "name": "Always allow"
+      },
+      {
+       "optionId": "reject",
+       "kind": "reject_once",
+       "name": "Reject"
+      }
+     ]
+    },
+    "then": {
+     "reject_once": [
+      {
+       "update": {
+        "sessionUpdate": "tool_call_update",
+        "toolCallId": "call_022a13070fdb4aa0bf017ad0",
+        "status": "failed",
+        "kind": "execute",
+        "title": "ls -a",
+        "locations": [
+         {
+          "path": "/tmp/acp-probe"
+         }
+        ],
+        "rawInput": {
+         "command": "ls -a",
+         "cwd": "/tmp/acp-probe"
+        },
+        "content": [
+         {
+          "type": "content",
+          "content": {
+           "type": "text",
+           "text": "The user rejected permission to use this specific tool call."
+          }
+         }
+        ],
+        "rawOutput": {
+         "error": "The user rejected permission to use this specific tool call."
+        }
+       }
+      },
+      {
+       "update": {
+        "sessionUpdate": "usage_update",
+        "used": 10388,
+        "size": 1000000,
+        "cost": {
+         "amount": 0.0015858,
+         "currency": "USD"
+        }
+       }
+      },
+      {
+       "respond": {
+        "stopReason": "end_turn",
+        "usage": {
+         "inputTokens": 10388,
+         "outputTokens": 46,
+         "totalTokens": 10434
+        },
+        "_meta": {}
+       }
+      }
+     ],
+     "allow_once": [
+      {
+       "respond": {
+        "stopReason": "end_turn",
+        "usage": {
+         "inputTokens": 10388,
+         "outputTokens": 46,
+         "totalTokens": 10434
+        },
+        "_meta": {}
+       }
+      }
+     ]
+    }
+   }
+  ]
+ ]
+}

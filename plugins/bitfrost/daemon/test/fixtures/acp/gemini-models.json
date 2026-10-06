@@ -1,0 +1,63 @@
+{
+ "_note": "Scripted from Gemini CLI 0.47 source (its session/new could not run here).",
+ "initialize": {
+  "protocolVersion": 1,
+  "authMethods": [
+   {
+    "id": "oauth-personal",
+    "name": "Log in with Google",
+    "description": "Log in with your Google account"
+   }
+  ],
+  "agentInfo": {
+   "name": "gemini-cli",
+   "title": "Gemini CLI",
+   "version": "0.47.0"
+  },
+  "agentCapabilities": {
+   "loadSession": true
+  }
+ },
+ "newSession": {
+  "result": {
+   "sessionId": "ses_1",
+   "modes": {
+    "availableModes": [
+     {
+      "id": "default",
+      "name": "Default"
+     }
+    ],
+    "currentModeId": "default"
+   },
+   "models": {
+    "availableModels": [
+     {
+      "modelId": "auto-gemini-3",
+      "name": "Auto (Gemini 3)",
+      "description": "Picks a Gemini 3 model for each request"
+     },
+     {
+      "modelId": "gemini-3-pro-preview",
+      "name": "gemini-3-pro-preview"
+     }
+    ],
+    "currentModelId": "auto-gemini-3"
+   }
+  }
+ },
+ "turns": [
+  [
+   {
+    "update": {
+     "sessionUpdate": "agent_message_chunk",
+     "messageId": "m1",
+     "content": {
+      "type": "text",
+      "text": "Hi."
+     }
+    }
+   }
+  ]
+ ]
+}
