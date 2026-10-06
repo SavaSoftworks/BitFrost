@@ -10,6 +10,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { VERSION } from './config.ts'
+import { done, fail, step, task } from './ui.ts'
 
 const REPO = process.env.BITFROST_REPO || 'SavaSoftworks/BitFrost'
 
@@ -32,28 +33,36 @@ export async function latestVersion(base: string): Promise<string> {
 }
 
 export async function update(base = `https://github.com/${REPO}`, current = VERSION): Promise<number> {
+  step('Checking for updates')
   let latest: string
   try {
-    latest = await latestVersion(base)
+    latest = await task('Latest release', `asking ${new URL(base).host}`, () => latestVersion(base))
   } catch (e) {
-    console.error(`bitfrost update: can't find the latest release at ${base}: ${(e as Error).message}`)
+    fail('update', `can't find the latest release at ${base}: ${(e as Error).message}`)
     return 1
   }
   if (!newer(latest, current)) {
-    console.log(`bitfrost ${current} is up to date${latest === current ? '' : ` (latest release is ${latest})`}`)
+    done('Latest release', latest === current ? latest : `${latest} (you have ${current}, which is newer)`)
+    console.log()
+    step(`BitFrost ${current} is up to date.`)
     return 0
   }
-  console.log(`bitfrost: updating ${current} -> ${latest}`)
+  done('Latest release', `${latest} (you have ${current})`)
   const url = `${base}/releases/download/v${latest}/install.sh`
   let script: string
   try {
-    const r = await fetch(url)
-    if (!r.ok) throw new Error(`HTTP ${r.status}`)
-    script = await r.text()
+    script = await task('Installer', `downloading install.sh from v${latest}`, async () => {
+      const r = await fetch(url)
+      if (!r.ok) throw new Error(`HTTP ${r.status}`)
+      return r.text()
+    })
   } catch (e) {
-    console.error(`bitfrost update: can't download ${url}: ${(e as Error).message}`)
+    fail('update', `can't download ${url}: ${(e as Error).message}`)
     return 1
   }
+  done('Installer', `install.sh from v${latest}`)
+  console.log()
+  // The release's own installer does the rest and prints its own steps.
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bitfrost-update-'))
   try {
     const file = path.join(dir, 'install.sh')

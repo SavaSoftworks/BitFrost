@@ -61,28 +61,58 @@ beforeEach(() => {
   write(path.join(home, '.claude', 'settings.json'), JSON.stringify({ env: { CLAUDE_CODE_ENABLE_FUNCTION_HOOKS: '1' } }))
 })
 
+const no = async () => ({ program: false, config: false })
+const up = (why: string | null = null) => ({ stop: async () => why, running: async () => true })
+const config = path.join(home, 'config', 'bitfrost')
+
 test('saying no changes nothing, not even the helper', async () => {
   let stopped = false
-  assert.strictEqual(await uninstall(async () => ((stopped = true), null), false, async () => false), 1)
+  assert.strictEqual(await uninstall({ stop: async () => ((stopped = true), null), running: async () => true }, {}, no), 1)
   assert.ok(!stopped)
   assert.deepStrictEqual(read(calls), [])
   for (const p of [data, link, path.join(home, 'config', 'bitfrost')]) assert.ok(fs.existsSync(p), p)
 })
 
-test('saying yes goes ahead', async () => {
-  assert.strictEqual(await uninstall(async () => null, false, async () => true), 0)
+test('yes to BitFrost and no to the config keeps the config', async () => {
+  assert.strictEqual(await uninstall(up(), {}, async () => ({ program: true, config: false })), 0)
   assert.ok(!fs.existsSync(data))
+  assert.ok(!fs.existsSync(link))
+  assert.ok(fs.existsSync(path.join(config, 'config.json')))
+})
+
+test('yes to both removes the config too', async () => {
+  assert.strictEqual(await uninstall(up(), {}, async () => ({ program: true, config: true })), 0)
+  assert.ok(!fs.existsSync(data))
+  assert.ok(!fs.existsSync(config))
+})
+
+test('the plan lists what goes in each group, before anything changes', async () => {
+  const { planOf } = await import('../uninstall.ts')
+  const plan = planOf()
+  assert.deepStrictEqual(plan.program.map((i) => i.label), ['Claude Code plugin', 'Claude Code plugin', 'GLM bridge in ZCode', 'App files', 'Command', 'Model list cache', 'Helper runtime files'])
+  assert.deepStrictEqual(plan.program.filter((i) => i.label === 'Claude Code plugin').map((i) => i.path), ['bitfrost@bitfrost from ~/.claude', 'bitfrost@bitfrost from ~/.claude-work'])
+  assert.deepStrictEqual(plan.config.map((i) => i.path), [config])
+  // ZCode's config file stays; only BitFrost's entry leaves it.
+  assert.strictEqual(plan.program.find((i) => i.label === 'GLM bridge in ZCode')!.path, 'from ~/.zcode/cli/config.json')
+  assert.ok(plan.program.find((i) => i.label === 'App files')!.size! > 0)
+  assert.ok(JSON.parse(fs.readFileSync(zcodeConfig, 'utf8')).plugins.dirs.includes(bridge), 'planning changes nothing')
+})
+
+test('--yes with --keep-config keeps the config', async () => {
+  assert.strictEqual(await uninstall(up(), { yes: true, keepConfig: true }), 0)
+  assert.ok(!fs.existsSync(data))
+  assert.ok(fs.existsSync(path.join(config, 'config.json')))
 })
 
 test('a busy helper stops it before anything changes', async () => {
-  assert.strictEqual(await uninstall(async () => 'agents are running', true), 1)
+  assert.strictEqual(await uninstall(up('agents are running'), { yes: true }), 1)
   assert.deepStrictEqual(read(calls), [])
   for (const p of [data, link, path.join(home, 'config', 'bitfrost'), path.join(home, 'run')]) assert.ok(fs.existsSync(p), p)
   assert.ok(JSON.parse(fs.readFileSync(zcodeConfig, 'utf8')).plugins.dirs.includes(bridge))
 })
 
 test('everything BitFrost added is removed, from every allowed profile, and nothing else', async () => {
-  assert.strictEqual(await uninstall(async () => null, true), 0)
+  assert.strictEqual(await uninstall(up(), { yes: true }), 0)
   assert.deepStrictEqual(read(calls), [
     'default plugin uninstall bitfrost@bitfrost --scope user',
     'default plugin marketplace remove bitfrost',
@@ -94,19 +124,37 @@ test('everything BitFrost added is removed, from every allowed profile, and noth
   }
   assert.deepStrictEqual(JSON.parse(fs.readFileSync(zcodeConfig, 'utf8')), { theme: 'dark', plugins: { dirs: ['/somewhere/else'] } })
   assert.ok(fs.existsSync(path.join(home, '.claude', 'settings.json')), 'Claude settings are left alone')
+  for (const p of [path.join(home, '.claude'), other]) assert.ok(fs.existsSync(p), `${p} stays`)
 })
 
 test('running it again finds nothing to do and still succeeds', async () => {
-  assert.strictEqual(await uninstall(async () => null, true), 0)
+  assert.strictEqual(await uninstall(up(), { yes: true }), 0)
   fs.rmSync(calls)
   // The config is gone now, so only the default profile is left to check.
-  assert.strictEqual(await uninstall(async () => null, true), 0)
+  assert.strictEqual(await uninstall(up(), { yes: true }), 0)
   assert.deepStrictEqual(read(calls), ['default plugin uninstall bitfrost@bitfrost --scope user', 'default plugin marketplace remove bitfrost'])
 })
 
 test('a bitfrost command that is not ours is kept', async () => {
   fs.rmSync(link)
   fs.symlinkSync('/opt/someone-elses/bitfrost', link)
-  assert.strictEqual(await uninstall(async () => null, true), 0)
+  assert.strictEqual(await uninstall(up(), { yes: true }), 0)
   assert.strictEqual(fs.readlinkSync(link), '/opt/someone-elses/bitfrost')
+})
+
+test('a helper that is not running is not stopped', async () => {
+  let stopped = false
+  assert.strictEqual(await uninstall({ stop: async () => ((stopped = true), null), running: async () => false }, { yes: true }), 0)
+  assert.ok(!stopped)
+  assert.ok(!fs.existsSync(data))
+})
+
+test('with only the config left, the one question is about the config', async () => {
+  assert.strictEqual(await uninstall(up(), { yes: true, keepConfig: true }), 0)
+  let asked: any = null
+  assert.strictEqual(await uninstall(up(), {}, async (plan) => ((asked = plan), { program: false, config: true })), 0)
+  assert.deepStrictEqual(asked.program, [])
+  assert.ok(!fs.existsSync(config))
+  // Nothing left at all: no question, nothing to do.
+  assert.strictEqual(await uninstall(up(), {}, async () => { throw new Error('asked') }), 0)
 })
