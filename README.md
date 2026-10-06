@@ -2,10 +2,23 @@
 
 <h4 align="center">A bridge between agents</h4>
 
+<p align="center">
+  <a href="https://x.com/SavaSoftworks"><img src="https://img.shields.io/badge/@SavaSoftworks-000000?style=for-the-badge&amp;logo=x&amp;logoColor=white" alt="Follow @SavaSoftworks on X"></a>
+</p>
+
 ---
 
-<br />
 
+<p align="center">
+  <a href="https://github.com/SavaSoftworks/BitFrost/releases/latest"><img src="https://img.shields.io/github/v/release/SavaSoftworks/BitFrost?label=version" alt="Version"></a>
+  <a href="https://github.com/SavaSoftworks/BitFrost/actions/workflows/release.yml"><img src="https://img.shields.io/github/actions/workflow/status/SavaSoftworks/BitFrost/release.yml?branch=main&amp;label=build" alt="Build status"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/SavaSoftworks/BitFrost" alt="License"></a>
+  <img src="https://img.shields.io/badge/status-beta-orange" alt="Status: beta">
+  <img src="https://img.shields.io/badge/platform-Linux%20%7C%20macOS%2012.3%2B-lightgrey" alt="Platform: Linux and macOS 12.3+">
+  <img src="https://img.shields.io/badge/node-23.6%2B-339933?logo=nodedotjs&amp;logoColor=white" alt="Node 23.6+">
+  <img src="https://img.shields.io/badge/Claude%20Code-plugin-D97757?logo=claude&amp;logoColor=white" alt="Claude Code plugin">
+</p>
+<br />
 
 BitFrost is a bridge between agents, allowing Claude to invoke subagents of models from other providers.
 
