@@ -22,7 +22,7 @@ Subagents permission requests and questions come straight to you.
 In auto mode, Claude will answer subagent questions.
 
 <p align="center">
-  <img src="assets/screen2.png" alt="GPT-6.1 Sol subagent asking user a question" width="768">
+  <img src="assets/screen2.png" alt="A GPT-6.1 Sol subagent asking the user which language to use" width="768">
 </p>
 
 
@@ -109,7 +109,7 @@ Tell Claude which kinds of tasks each model should take on. For example:
 
 > Use Opus and sol6.1 interchangeably for hard coding work, and balance the work between them. Use GLM for big mechanical refactors and tests. Use luna6 only for research and docs.
 
-Once Claude understoods the assignment, ask it to save that as a rule in your CLAUDE.md so every session follows it.
+Once Claude understands the assignment, ask it to save that as a rule in your CLAUDE.md so every session follows it.
 
 
 ## Known Limitations
