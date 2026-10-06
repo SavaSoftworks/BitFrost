@@ -89,4 +89,6 @@ export type ProviderFactory = {
   optIn?: boolean
   create(env: ProviderEnv): Provider | null
   setup?(env: ProviderEnv): void
+  // Undoes setup, for bitfrost uninstall.
+  uninstall?(): void
 }

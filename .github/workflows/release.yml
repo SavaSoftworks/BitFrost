@@ -41,7 +41,8 @@ jobs:
         run: |
           home=$(mktemp -d)
           version=$(node -p 'require("./plugins/bitfrost/.claude-plugin/plugin.json").version')
-          HOME=$home sh release/install.sh --from "dist/bitfrost-$version.tar.gz"
+          grep -qx "RELEASE=$version" dist/install.sh
+          HOME=$home sh dist/install.sh --from "dist/bitfrost-$version.tar.gz"
           test -x "$home/.local/bin/bitfrost"
           HOME=$home "$home/.local/bin/bitfrost" socket
           HOME=$home claude plugin list | grep -q 'bitfrost@bitfrost'
@@ -68,8 +69,8 @@ jobs:
         run: |
           home=$(mktemp -d)
           version=$(node -p 'require("./plugins/bitfrost/.claude-plugin/plugin.json").version')
-          HOME=$home sh release/install.sh --from "dist/bitfrost-$version.tar.gz"
-          HOME=$home sh release/install.sh --from "dist/bitfrost-$version.tar.gz"
+          HOME=$home sh dist/install.sh --from "dist/bitfrost-$version.tar.gz"
+          HOME=$home sh dist/install.sh --from "dist/bitfrost-$version.tar.gz"
           test -L "$home/.local/share/bitfrost/current"
           HOME=$home "$home/.local/bin/bitfrost" socket
           HOME=$home claude plugin list | grep -q 'bitfrost@bitfrost'
@@ -109,7 +110,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ steps.check.outputs.version }}
         run: |
-          cp release/install.sh dist/install.sh
           gh release create "v$VERSION" \
             --target "$GITHUB_SHA" \
             --title "bitfrost $VERSION" \

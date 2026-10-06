@@ -46,11 +46,17 @@ Profiles not listed get no subagents.
 
 ### Updating, or installing a specific version
 
-Run the installer again to update. For a specific version:
+Run `bitfrost update`. It installs the latest release if it's newer than yours, and does nothing otherwise.
+
+For a specific version, run that release's installer. It installs its own version:
 
 ```
-curl -fsSL https://github.com/SavaSoftworks/BitFrost/releases/latest/download/install.sh | sh -s -- --version 0.8.1
+curl -fsSL https://github.com/SavaSoftworks/BitFrost/releases/download/v0.8.1/install.sh | sh
 ```
+
+### Uninstalling
+
+Run `bitfrost uninstall`. It stops the helper and removes the Claude plugin, the GLM bridge in ZCode, your BitFrost config and every file BitFrost added. It asks first; add `--yes` to skip that, for example in a script. If a subagent is still running, it changes nothing and asks you to wait.
 
 ## Troubleshooting
 

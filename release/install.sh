@@ -8,6 +8,10 @@
 # Installs or updates BitFrost from a GitHub release. Run it again to update.
 # Options: --version X.Y.Z, --from FILE, --no-plugin.
 
+# build.sh stamps a release's copy with its own version, so that copy installs
+# its own release. Left empty here, so this copy installs the latest.
+RELEASE=
+
 # All in main() so a cut-off download never runs half a script.
 main() {
   set -eu
@@ -29,6 +33,7 @@ main() {
       *) die "unknown option: $1" ;;
     esac
   done
+  [ -n "$version" ] || [ -n "$from" ] || version=$RELEASE
 
   need tar
   mkdir -p "$DATA/versions"
@@ -213,11 +218,12 @@ Installs or updates bitfrost (the Claude Code plugin and the bitfrostd helper).
 
   install.sh [--version X.Y.Z] [--from bitfrost-X.Y.Z.tar.gz] [--no-plugin]
 
-  --version X.Y.Z   install this release instead of the latest
+  --version X.Y.Z   install this release instead of the default
   --from FILE       install a tarball you already have (checked against FILE.sha256 if it's there)
   --no-plugin       leave Claude Code alone (only unpack and link the helper)
 
-Run it again to update. Set BITFROST_REPO=owner/repo to install from a fork.
+With no --version, a release's copy of this script installs that release, and
+any other copy installs the latest. Set BITFROST_REPO=owner/repo to install from a fork.
 EOF2
 }
 

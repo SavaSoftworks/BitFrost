@@ -4,7 +4,7 @@
 // BitFrost is free software: you can share and change it under the GNU General
 // Public License, version 3 only. It comes with no warranty. See LICENSE.
 
-// bitfrostd commands: serve, ensure, socket, status, restart, setup <id>, selftest <id> [agent], selftest --all.
+// bitfrostd commands: see HELP at the bottom. serve and ensure are for the plugin, not people.
 // HTTP API over the Unix socket, with JSON bodies:
 // GET /health: helper health and config errors.
 // GET /status: providers, leases and sessions.
@@ -40,6 +40,8 @@ import { LEASE_TTL_MS, SessionTable } from './leases.ts'
 import type { Provider, ProviderFactory } from './provider.ts'
 import { PROVIDERS } from './providers/index.ts'
 import { selftest, selftestAll } from './selftest.ts'
+import { update } from './update.ts'
+import { uninstall } from './uninstall.ts'
 
 const MAX_WAIT_MS = 30_000
 const GRACE_MS = 45_000 // Wait after the last lease ends.
@@ -484,22 +486,25 @@ function setup(id: string | undefined) {
   f.setup(providerEnv(config, f.id))
 }
 
-async function restart() {
+// Returns why the helper is still up, or null once it's gone.
+async function stop(): Promise<string | null> {
   const r = await call('POST', '/shutdown', 3000)
-  if (r && r.status !== 200) {
-    console.error(`bitfrostd restart: ${r.body?.error ?? `HTTP ${r.status}`}; try again once they finish (bitfrostd status)`)
+  if (!r) return null
+  if (r.status !== 200) return r.body?.error ?? `HTTP ${r.status}`
+  for (let i = 0; i < 50 && (await health()); i++) await new Promise((res) => setTimeout(res, 100))
+  return (await health()) ? 'it did not exit' : null
+}
+
+async function restart() {
+  const wasUp = !!(await health())
+  const why = await stop()
+  if (why) {
+    console.error(`bitfrostd restart: ${why}; try again once they finish (bitfrostd status)`)
     process.exit(1)
-  }
-  if (r) {
-    for (let i = 0; i < 50 && (await health()); i++) await new Promise((res) => setTimeout(res, 100))
-    if (await health()) {
-      console.error('bitfrostd restart: the old helper did not exit')
-      process.exit(1)
-    }
   }
   await ensure()
   const h = await health()
-  console.log(`bitfrostd ${h.version} ${r ? 'restarted' : 'started'}, pid ${h.pid}`)
+  console.log(`bitfrostd ${h.version} ${wasUp ? 'restarted' : 'started'}, pid ${h.pid}`)
 }
 
 async function printStatus() {
@@ -531,17 +536,38 @@ async function printStatus() {
   console.log(lines.join('\n'))
 }
 
-const mode = process.argv[2] ?? 'serve'
-if (mode === 'setup') setup(process.argv[3])
+const HELP = `BitFrost ${VERSION}: lets Claude hand work to models from other companies.
+
+usage: bitfrost <command>
+
+  status                    what the helper is doing: apps, models, subagents
+  restart                   restart the helper, once no subagent is running
+  update                    install the latest release, if it's newer
+  uninstall [--yes]         remove BitFrost from Claude Code, ZCode and this machine
+  setup <app>               one-time setup for an app (${PROVIDERS.filter((p) => p.setup).map((p) => p.id).join(', ')})
+  selftest <app> [model]    check that an app works with BitFrost
+  selftest --all            check every app
+  socket                    print the helper's socket path
+  -v, --version             print the version
+  -h, --help                show this
+
+Guide: https://github.com/${process.env.BITFROST_REPO || 'SavaSoftworks/BitFrost'}/blob/main/GUIDE.md`
+
+const mode = process.argv[2]
+if (mode === undefined || mode === 'help' || mode === '--help' || mode === '-h') console.log(HELP)
+else if (mode === 'version' || mode === '--version' || mode === '-v') console.log(VERSION)
+else if (mode === 'setup') setup(process.argv[3])
 else if (mode === 'zcode-setup') setup('zcode')
 else if (mode === 'ensure') await ensure()
 else if (mode === 'serve') serve()
 else if (mode === 'socket') console.log(SOCKET)
 else if (mode === 'status') await printStatus()
 else if (mode === 'restart') await restart()
+else if (mode === 'update') process.exit(await update())
+else if (mode === 'uninstall') process.exit(await uninstall(stop, ['--yes', '-y'].includes(process.argv[3] ?? '')))
 else if (mode === 'selftest' && process.argv[3] === '--all') await selftestAll()
 else if (mode === 'selftest') await selftest(process.argv[3], process.argv[4])
 else {
-  console.error('usage: bitfrostd serve|ensure|socket|status|restart|setup <provider>|selftest <provider> [agent]|selftest --all')
+  console.error(`bitfrost: unknown command ${mode}\n\n${HELP}`)
   process.exit(2)
 }

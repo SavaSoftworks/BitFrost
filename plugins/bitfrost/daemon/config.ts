@@ -114,7 +114,7 @@ export function providerEnv(config: Config, id: string): ProviderEnv {
 }
 
 // Try the login shell too, since tools may only be on its PATH.
-function resolveBinary(name: string): string | null {
+export function resolveBinary(name: string): string | null {
   for (const dir of (process.env.PATH ?? '').split(':')) {
     const p = path.join(dir, name)
     try {

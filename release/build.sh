@@ -5,7 +5,8 @@
 # BitFrost is free software: you can share and change it under the GNU General
 # Public License, version 3 only. It comes with no warranty. See LICENSE.
 
-# Builds dist/bitfrost-<version>.tar.gz and its .sha256 for install.sh.
+# Builds dist/bitfrost-<version>.tar.gz, its .sha256, and dist/install.sh
+# stamped to install that version.
 set -eu
 
 cd "$(dirname "$0")/.."
@@ -13,7 +14,7 @@ version=$(node -p 'JSON.parse(require("fs").readFileSync("plugins/bitfrost/.clau
 name=bitfrost-$version
 out=dist/$name
 
-rm -rf "$out" "dist/$name.tar.gz" "dist/$name.tar.gz.sha256"
+rm -rf "$out" "dist/$name.tar.gz" "dist/$name.tar.gz.sha256" dist/install.sh
 mkdir -p "$out/.claude-plugin" "$out/plugins"
 cp LICENSE README.md "$out/"
 cp -R plugins/bitfrost "$out/plugins/"
@@ -38,4 +39,7 @@ tar --sort=name --owner=0 --group=0 --numeric-owner --mtime="$mtime" \
 gzip -n "dist/$name.tar"
 (cd dist && sha256sum "$name.tar.gz" >"$name.tar.gz.sha256")
 rm -rf "$out"
+
+sed "s/^RELEASE=\$/RELEASE=$version/" release/install.sh >dist/install.sh
+grep -qx "RELEASE=$version" dist/install.sh || { echo "build.sh: couldn't stamp install.sh" >&2; exit 1; }
 echo "$version"

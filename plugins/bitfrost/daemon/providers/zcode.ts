@@ -467,4 +467,17 @@ export const zcodeProvider: ProviderFactory = {
     fs.writeFileSync(ZCODE_CONFIG, JSON.stringify(cfg, null, 2) + '\n')
     console.log(`Registered ${BRIDGE_DIR} in ${ZCODE_CONFIG}`)
   },
+  uninstall() {
+    const cfg = readZCodeConfig()
+    const dirs: string[] | undefined = cfg?.plugins?.dirs
+    if (dirs?.includes(BRIDGE_DIR)) {
+      cfg.plugins.dirs = dirs.filter((d) => d !== BRIDGE_DIR)
+      if (!cfg.plugins.dirs.length) delete cfg.plugins.dirs
+      if (!Object.keys(cfg.plugins).length) delete cfg.plugins
+      fs.writeFileSync(ZCODE_CONFIG, JSON.stringify(cfg, null, 2) + '\n')
+      console.log(`bitfrost: removed the GLM bridge from ${ZCODE_CONFIG}`)
+    }
+    fs.rmSync(`${ZCODE_CONFIG}.bak-bitfrost`, { force: true })
+    fs.rmSync(BRIDGE_DIR, { recursive: true, force: true })
+  },
 }

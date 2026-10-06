@@ -7,7 +7,7 @@
 <br />
 
 
-BitFrost is a bridge between agents, allowing Clade to invoke sub-agents of models from other providers.
+BitFrost is a bridge between agents, allowing Claude to invoke sub-agents of models from other providers.
 
 Works with the Claude desktop app and Claude Code, on Linux and macOS 12.3+.
 
@@ -48,7 +48,7 @@ You need Node 23.6 or newer, and at least one of the apps above, signed in.
    curl -fsSL https://github.com/SavaSoftworks/BitFrost/releases/latest/download/install.sh | sh
    ```
 
-   It installs the plugin into Claude Code and adds a `bitfrost` command to `~/.local/bin`. Run it again to update.
+   It installs the plugin into Claude Code and adds a `bitfrost` command to `~/.local/bin`. To update later, run `bitfrost update`.
 
 3. For GLM, sign in to ZCode's command-line tool ([command in the guide](GUIDE.md#zcode-glm)), then run once:
 
@@ -59,6 +59,22 @@ You need Node 23.6 or newer, and at least one of the apps above, signed in.
 4. Start a new Claude session.
 
 If you use a Claude profile other than `~/.claude` (`CLAUDE_CONFIG_DIR`), see [Configuration](GUIDE.md#configuration).
+
+## Updates
+
+BitFrost can be updated by running:
+
+```bash
+bitfrost update
+```
+
+## Uninstall
+
+Uninstalling will remove the claude plugin, bitfrost daemon, and (if applicable) the zcode plugin:
+
+```bash
+bitfrost uninstall
+```
 
 ## How to Use
 
