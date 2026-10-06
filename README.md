@@ -7,13 +7,22 @@
 <br />
 
 
-BitFrost is a bridge between agents, allowing Claude to invoke sub-agents of models from other providers.
+BitFrost is a bridge between agents, allowing Claude to invoke subagents of models from other providers.
 
-Works with the Claude desktop app and Claude Code, on Linux and macOS 12.3+.
+Works in Claude Code, either in the terminal or in the Code tab of the Claude desktop app, on Linux and macOS 12.3+. Both use the same ~/.claude settings, so you set it up once.
 
 <br />
 <p align="center">
-  <img src="assets/screen1.png" alt="Claude invoking a GPT-6.1 Sol sub-agent" width="768">
+  <img src="assets/screen1.png" alt="Claude invoking a GPT-6.1 Sol subagent" width="768">
+</p>
+<br />
+
+Subagents permission requests and questions come straight to you.
+
+In auto mode, Claude will answer subagent questions.
+
+<p align="center">
+  <img src="assets/screen2.png" alt="GPT-6.1 Sol subagent asking user a question" width="768">
 </p>
 
 
@@ -28,7 +37,7 @@ Use any mix of these. You don't need all of them.
 | opencode, Oh My Pi | Various | only once you turn them on in `~/.config/bitfrost/config.json` |
 | Gemini CLI | Gemini  | only once you turn it on, the same way |
 
-Codex and Zcode are fully supported. Other harnesses, including ones listed, should be accepted as experimental at this time.
+Codex and ZCode are fully supported. The others are experimental.
 
 opencode and Oh My Pi also need a `models` list naming the models you want. Setup for each app is in [the guide](GUIDE.md#setting-up-each-app).
 
@@ -36,7 +45,7 @@ opencode and Oh My Pi also need a `models` list naming the models you want. Setu
 
 You need Node 23.6 or newer, and at least one of the apps above, signed in.
 
-1. Add this to the `env` block of `~/.claude/settings.json`:
+1. Add this to the `env` block of `~/.claude/settings.json`. This step is required. The installer checks for it but won't add it for you:
 
    ```json
    "CLAUDE_CODE_ENABLE_FUNCTION_HOOKS": "1"
@@ -48,7 +57,7 @@ You need Node 23.6 or newer, and at least one of the apps above, signed in.
    curl -fsSL https://github.com/SavaSoftworks/BitFrost/releases/latest/download/install.sh | sh
    ```
 
-   It installs the plugin into Claude Code and adds a `bitfrost` command to `~/.local/bin`. To update later, run `bitfrost update`.
+   It installs the plugin into Claude Code and adds a `bitfrost` command to `~/.local/bin`.
 
 3. For GLM, sign in to ZCode's command-line tool ([command in the guide](GUIDE.md#zcode-glm)), then run once:
 
@@ -56,13 +65,13 @@ You need Node 23.6 or newer, and at least one of the apps above, signed in.
    bitfrost setup zcode
    ```
 
-4. Start a new Claude session.
+   Without it, GLM can't ask you for permission and is refused instead.
+
+4. Start a new Claude session. New models also only show up in a new session.
 
 If you use a Claude profile other than `~/.claude` (`CLAUDE_CONFIG_DIR`), see [Configuration](GUIDE.md#configuration).
 
-## Updates
-
-BitFrost can be updated by running:
+## Update
 
 ```bash
 bitfrost update
@@ -70,11 +79,11 @@ bitfrost update
 
 ## Uninstall
 
-Uninstalling will remove the claude plugin, bitfrost daemon, and (if applicable) the zcode plugin:
-
 ```bash
 bitfrost uninstall
 ```
+
+This removes the Claude plugin, the BitFrost daemon, the ZCode plugin (if you set one up), your BitFrost config and every other file BitFrost added. It asks first. Add `--yes` to skip the question.
 
 ## How to Use
 
@@ -84,23 +93,28 @@ Ask Claude for a model by name:
 
 Claude is told at the start of each session which models you have and what they are called ("sol6", "glm", ...). If none can be offered, the session tells you why.
 
-To see what the helper is doing:
+When a subagent asks for permission, the request comes to you, not Claude. No answer means Deny. In auto mode, a safety review decides instead.
+
+To see what the BitFrost daemon is doing and which apps it found:
 
 ```sh
 bitfrost status
 ```
 
+If something isn't working, see [Troubleshooting](GUIDE.md#troubleshooting).
+
 ## How to Use Effectively
 
-I recommend describing to Claude which types of tasks you'd like each model to take on. For example, telling it that it should use opus and sol6.1 agents relatively interchangeably, while balancing the work between the two, tells Claude that those two would be your primary implementation subagents, while you could specify less capable models that you'd like to use only for basic research or non-coding related tasks.
+Tell Claude which kinds of tasks each model should take on. For example:
 
-Once Claude understoods the assignment, then you can have it persist that as a persistent rule for invoking subagents.
+> Use Opus and sol6.1 interchangeably for hard coding work, and balance the work between them. Use GLM for big mechanical refactors and tests. Use luna6 only for research and docs.
+
+Once Claude understoods the assignment, ask it to save that as a rule in your CLAUDE.md so every session follows it.
 
 
 ## Known Limitations
 
-- GLM sub-agents can only draw from z.ai coding plan quotas, not start plan, free usage buckets, or other providers added in ZCode. *This will be addressed in later versions*
-   - GLM needs a Z.ai individual coding plan. Teams, Start plans, bigmodel support will be added soon.
+- GLM needs a Z.ai individual coding plan. Teams, Start plans, free usage, bigmodel and other providers added in ZCode aren't supported yet.
 - Windows is not a supported platform. It may work via WSL, but it also may not.
 - Gemini CLI only works with Gemini Code Assist Standard/Enterprise or a paid Gemini API key. Google retired it for personal accounts in June 2026. Its replacement, Antigravity CLI (`agy`), isn't supported yet.
 - GLM via ZCode is only tested on Linux, with ZCode in `/opt/ZCode`. On macOS, BitFrost doesn't look for ZCode in its usual place yet.
@@ -110,7 +124,6 @@ Once Claude understoods the assignment, then you can have it persist that as a p
 - The other apps' own subagents and helper models are turned off (opencode's subagents; Oh My Pi's advisor, subagents and prewalk), so each task stays on the model you picked.
 - Claude Code is the only app that can hand out work. Codex, ZCode and the rest can take tasks but can't start BitFrost subagents of their own.
 - BitFrost relies on Claude Code's function hooks, which are still experimental. A Claude Code update, or Anthropic switching the feature off remotely, can turn BitFrost off until it's fixed.
-- New models show up in your next Claude session, not the current one.
 
 ## More
 
