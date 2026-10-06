@@ -10,10 +10,24 @@ HERE=$(dirname "$(readlink -f "$0")")
 
 usable() { [ -n "$1" ] && [ -x "$1" ] && "$1" -e 'const [a, b] = process.versions.node.split(".").map(Number); process.exit(a > 23 || (a === 23 && b >= 6) ? 0 : 1)' 2>/dev/null; }
 
-for candidate in "$BITFROST_NODE" "$(command -v node 2>/dev/null)" \
-  "$("${SHELL:-/bin/sh}" -lic 'command -v node' 2>/dev/null | tail -n 1)" /usr/bin/node /usr/local/bin/node; do
+# An interactive shell takes over the terminal and stops Claude Code mid-read,
+# so run it without job control, or without the terminal at all where setsid exists.
+login_shell_node() {
+  if command -v setsid >/dev/null 2>&1; then
+    setsid "${SHELL:-/bin/sh}" -lic 'command -v node' </dev/null 2>/dev/null | tail -n 1
+  else
+    "${SHELL:-/bin/sh}" +m -lic 'command -v node' </dev/null 2>/dev/null | tail -n 1
+  fi
+}
+
+for candidate in "$BITFROST_NODE" "$(command -v node 2>/dev/null)" /usr/bin/node /usr/local/bin/node /opt/homebrew/bin/node; do
   if usable "$candidate"; then NODE=$candidate; break; fi
 done
+# Ask the login shell only when nothing else worked; it is slow.
+if [ -z "$NODE" ]; then
+  candidate=$(login_shell_node)
+  if usable "$candidate"; then NODE=$candidate; fi
+fi
 if [ -z "$NODE" ]; then
   echo "bitfrostd: no Node >= 23.6 found (set BITFROST_NODE)" >&2
   exit 1
