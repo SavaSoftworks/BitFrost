@@ -31,7 +31,7 @@ function setup() {
     table.add(s, leaseId)
     return s
   }
-  const stop = (s: Session) => s.push({ type: 'turn_completed', turnId: `${s.info.id}-t`, status: 'interrupted', finalText: '' })
+  const stop = (s: Session) => s.push({ type: 'turn_completed', turnId: `${s.info.id}-t`, status: 'interrupted', reason: 'interrupted', finalText: '' })
   const advance = (ms: number) => {
     now += ms
     table.tick()
@@ -149,4 +149,45 @@ test('a session whose lease ended while it started is let go', () => {
   session('a', 'gone')
   assert.strictEqual(table.sessions.size, 0)
   assert.deepStrictEqual(disposed, ['a'])
+})
+
+test('attach rebinds a held or closing session and persists its new owner', async () => {
+  const { table,session,stop,disposed } = setup()
+  table.addLease('L1',{ host:'test',profile:'/p',hostSessionId:'old' })
+  const s = session('a','L1',true)
+  table.release('L1')
+  assert.equal(table.get('a'),s)
+  assert.equal(s.info.state,'stopping')
+  table.addLease('L2',{ host:'test',profile:'/p',hostSessionId:'new' })
+  table.attach(s,'L2','lead')
+  assert.equal(table.leaseIdOf('a'),'L2')
+  assert.equal(s.info.claudeSession,'lead')
+  assert.equal(s.info.closedAt,null)
+  stop(s)
+  await settle()
+  assert.deepEqual(disposed,[])
+  assert.equal(table.get('a'),s)
+})
+
+test('detached loads are cached across requests and expire only when unowned and unused', () => {
+  let now = Date.now()
+  const table = new SessionTable(() => undefined, () => {}, () => now)
+  let reads = 0
+  const store = { load: (id: string) => { reads++; return { info: { id, harness: 'fake', agent: 'test', model: 'm', cwd: '/tmp', state: 'detached' }, events: [], lastSeq: 0, nativeRef: null } }, saveSession: () => {} } as any
+  const first = table.load('saved', store)!
+  first.lastSeenAt = now
+  assert.equal(table.load('saved', store), first)
+  assert.equal(reads, 1)
+  assert.deepEqual(table.summaries(), [])
+  now += HOLD_MS + 1
+  table.tick()
+  assert.notEqual(table.load('saved', store), first)
+  assert.equal(reads, 2)
+  table.addLease('lease', { host: 'test', profile: '/p', hostSessionId: 'lead' })
+  const attached = table.load('saved', store)!
+  table.attach(attached, 'lease')
+  now += HOLD_MS + 1
+  table.renew('lease')
+  table.tick()
+  assert.equal(table.load('saved', store), attached)
 })

@@ -11,7 +11,7 @@ import os from 'node:os'
 import path, { dirname } from 'node:path'
 import { createInterface } from 'node:readline'
 import { randomUUID } from 'node:crypto'
-import type { AgentEventBody, Decision, FileChange, Question } from '../events.ts'
+import type { AgentEventBody, Decision, EndReason, FileChange, Question } from '../events.ts'
 import type { HarnessModel, Provider, ProviderEnv, ProviderFactory, SpawnRequest } from '../provider.ts'
 import type { Session } from '../session.ts'
 
@@ -81,8 +81,15 @@ export class CodexAdapter implements Provider {
   private proc: ChildProcess | null = null
   private ready: Promise<void> | null = null
   private nextId = 1
-  private pending = new Map<number, { resolve: (v: Json) => void; reject: (e: Error) => void }>()
+  private pending = new Map<number, { threadId?: string; method: string; resolve: (v: Json) => void; reject: (e: Error) => void }>()
   private sessions = new Map<string, Session>()
+  private turnListeners = new Map<Session, () => void>()
+  private archived = new Map<string, boolean>()
+  private archiveJobs = new Map<string, Promise<void>>()
+  private resumeNeeded = new Set<string>()
+  private disposed = new WeakMap<Session, number>()
+  private starting = new Set<Session>()
+  private interruptedStarts = new Set<Session>()
   private turnText = new Map<string, string>()
   private approvals = new Map<string, { rpcId: number | string; method: string; params: Json; session: Session }>()
   private questions = new Map<string, { rpcId: number | string; questions: Question[]; session: Session }>()
@@ -115,6 +122,7 @@ export class CodexAdapter implements Provider {
       // Catch writes to an exited app-server so they cannot crash the helper.
       proc.stdin!.on('error', (e) => this.log(`codex stdin: ${e.message}`))
       proc.on('error', (e) => {
+        if (this.proc !== proc) return
         this.log(`codex app-server could not run: ${e.message}`)
         for (const p of this.pending.values()) p.reject(e)
         this.pending.clear()
@@ -122,14 +130,29 @@ export class CodexAdapter implements Provider {
         this.ready = null
       })
       proc.on('exit', (code, signal) => {
+        if (this.proc !== proc) return
         this.log(`codex app-server exited code=${code} signal=${signal}`)
         for (const p of this.pending.values()) p.reject(new Error('codex app-server exited'))
         this.pending.clear()
-        for (const s of this.sessions.values()) if (s.info.state === 'running') s.push({ type: 'session_failed', error: 'codex app-server exited' })
+        const sessions = [...this.sessions.values()]
+        this.sessions.clear()
+        for (const remove of this.turnListeners.values()) remove()
+        this.turnListeners.clear()
+        this.archived.clear()
+        this.resumeNeeded.clear()
+        this.autoReview.clear()
+        this.approvals.clear()
+        this.questions.clear()
+        for (const s of sessions) {
+          s.detach()
+          if (s.activeTurnId) s.push({ type: 'session_failed', error: 'codex app-server exited' })
+          else s.dropInputs()
+        }
         this.proc = null
         this.ready = null
       })
       createInterface({ input: proc.stdout! }).on('line', (line) => {
+        if (this.proc !== proc) return
         this.record?.(line)
         let msg: Json
         try {
@@ -152,12 +175,56 @@ export class CodexAdapter implements Provider {
     this.proc!.stdin!.write(JSON.stringify(msg) + '\n')
   }
 
-  private request(method: string, params: Json): Promise<Json> {
+  private request(method: string, params: Json, timeoutMs = 0): Promise<Json> {
     const id = this.nextId++
     return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject })
-      this.send({ id, method, params })
+      let timer: NodeJS.Timeout | undefined
+      const done = { resolve: (value: Json) => { clearTimeout(timer); resolve(value) }, reject: (error: Error) => { clearTimeout(timer); reject(error) }, threadId: params?.threadId, method }
+      this.pending.set(id, done)
+      if (timeoutMs) {
+        timer = setTimeout(() => { this.pending.delete(id); done.reject(new Error(`${method} timed out`)) }, timeoutMs)
+        timer.unref()
+      }
+      try { this.send({ id, method, params }) }
+      catch (error) { this.pending.delete(id); done.reject(error as Error) }
     })
+  }
+
+  private watchTurns(session: Session) {
+    this.turnListeners.get(session)?.()
+    this.turnListeners.set(session, session.onTurnCompleted((event) => {
+      if (event.type === 'turn_completed' && !event.continues) void this.setArchived(session, true)
+    }))
+  }
+
+  private setArchived(session: Session, archived: boolean, disposing = false): Promise<void> {
+    const ref = session.nativeRef
+    const threadId = ref?.threadId
+    if (!threadId || ref.ephemeral) return Promise.resolve()
+    const job = (this.archiveJobs.get(threadId) ?? Promise.resolve()).then(async () => {
+      if (archived && !disposing && (session.activeTurnId || session.hasPendingInput())) return
+      if (this.archived.get(threadId) === archived) return
+      const method = archived ? 'thread/archive' : 'thread/unarchive'
+      if (archived) this.resumeNeeded.add(threadId)
+      try {
+        if (!this.proc) throw new Error('app-server is not running')
+        await this.request(method, { threadId }, 2000)
+      } catch (error) {
+        if (archived || !/\b(?:not archived|already unarchived|not in (?:the )?archive)\b/i.test((error as Error).message)) {
+          this.archived.delete(threadId)
+          try { this.log(`codex ${method} ${threadId}: ${(error as Error).message}`) } catch {}
+          return
+        }
+      }
+      this.archived.set(threadId, archived)
+      session.setNativeRef({ ...session.nativeRef, archived })
+    }).catch((error) => {
+      this.archived.delete(threadId)
+      try { this.log(`codex archive state ${threadId}: ${(error as Error).message}`) } catch {}
+    })
+    this.archiveJobs.set(threadId, job)
+    void job.then(() => { if (this.archiveJobs.get(threadId) === job) this.archiveJobs.delete(threadId) })
+    return job
   }
 
   async spawnSession(session: Session, req: CodexSpawn): Promise<string> {
@@ -169,8 +236,8 @@ export class CodexAdapter implements Provider {
       // Ask the user before leaving the sandbox only when the host can ask.
       approvalPolicy: req.canAskUser ? 'on-request' : 'never',
       ...(req.canAskUser ? { approvalsReviewer: req.autoReview ? 'auto_review' : 'user' } : {}),
-      // Keep threads in memory so they stay out of the app's conversation list.
-      ephemeral: true,
+      // Persistent threads can be resumed after the daemon restarts.
+      ephemeral: !!req.ephemeral,
       config: {
         ...(req.effort ? { model_reasoning_effort: req.effort } : {}),
         // Enable questions outside plan mode, where Codex disables them by default.
@@ -182,7 +249,18 @@ export class CodexAdapter implements Provider {
     session.info.id = threadId
     this.sessions.set(threadId, session)
     if (req.autoReview) this.autoReview.add(threadId)
-    await this.sendInput(session, req.prompt)
+    session.info.effort = req.effort ?? null
+    session.setNativeRef({ threadId, canAskUser: !!req.canAskUser, autoReview: !!req.autoReview, sandbox: req.sandbox ?? 'workspace-write', ephemeral: !!req.ephemeral })
+    this.archived.set(threadId, false)
+    this.watchTurns(session)
+    session.acceptInput(req.prompt, 'started')
+    try { await this.sendInput(session, req.prompt) }
+    catch (error) {
+      await session.stop(this, 'host')
+      this.disposeSession(session)
+      session.detach()
+      throw error
+    }
     return threadId
   }
 
@@ -210,24 +288,66 @@ export class CodexAdapter implements Provider {
       }))
   }
 
-  async sendInput(session: Session, text: string): Promise<void> {
+  async sendInput(session: Session, text: string): Promise<'started' | 'steered'> {
     await this.start()
     const input = [{ type: 'text', text }]
     if (session.activeTurnId) {
-      await this.request('turn/steer', { threadId: session.info.id, expectedTurnId: session.activeTurnId, input })
-      return
+      const expected = session.activeTurnId
+      try {
+        await this.request('turn/steer', { threadId: session.info.id, expectedTurnId: expected, input })
+        return 'steered'
+      } catch (e) {
+        if (session.activeTurnId === expected && !/\b(?:turn|expectedTurnId)\b.*\b(?:ended|completed|mismatch|not found|no active|not active)\b/i.test((e as Error).message)) throw e
+        // The turn just ended; let its own turn/completed arrive before calling it failed.
+        for (let waited = 0; session.activeTurnId === expected && waited < 2000; waited += 50) await new Promise((r) => setTimeout(r, 50))
+        if (session.activeTurnId === expected) session.push({ type: 'turn_completed', turnId: expected, status: 'failed', reason: 'error', error: (e as Error).message, finalText: session.live?.partialText ?? '' })
+      }
     }
     const reviewer = this.autoReview.has(session.info.id) ? { approvalsReviewer: 'auto_review' } : {}
-    const r = await this.request('turn/start', { threadId: session.info.id, input, ...reviewer })
-    if (!session.activeTurnId && r?.turn?.id) session.push({ type: 'turn_started', turnId: r.turn.id })
+    this.starting.add(session)
+    try {
+      await this.setArchived(session, false)
+      if (this.sessions.get(session.info.id) !== session) throw new Error('Codex session stopped')
+      if (this.resumeNeeded.has(session.info.id)) await this.resumeThread(session, session.nativeRef)
+      const r = await this.request('turn/start', { threadId: session.info.id, input, ...reviewer })
+      if (r?.turn?.id && !session.hasTurnStarted(r.turn.id)) session.push({ type: 'turn_started', turnId: r.turn.id })
+      if (this.interruptedStarts.delete(session)) void this.interrupt(session).catch(() => {})
+      return 'started'
+    } finally { this.starting.delete(session) }
+  }
+
+  async attach(session: Session, ref: Json) {
+    if (!ref?.threadId) throw new Error("Codex can't reopen this session: no thread id was saved")
+    const version = this.disposed.get(session) ?? 0
+    session.setNativeRef(ref)
+    await this.start()
+    try {
+      // Archived rollout files must be restored before resuming by thread id.
+      await this.setArchived(session, false)
+      if ((this.disposed.get(session) ?? 0) !== version) throw new Error('Codex session stopped')
+      await this.resumeThread(session, ref)
+      if ((this.disposed.get(session) ?? 0) !== version) throw new Error('Codex session stopped')
+    } catch (e) { throw new Error(`Codex can't reopen this session: ${(e as Error).message}`) }
+    this.sessions.set(ref.threadId, session)
+    this.watchTurns(session)
+    if (ref.autoReview) this.autoReview.add(session.info.id)
+  }
+
+  private async resumeThread(session: Session, ref: Json) {
+    await this.request('thread/resume', { threadId: ref.threadId, cwd: session.info.cwd, model: session.info.model, sandbox: ref.sandbox ?? 'workspace-write', approvalPolicy: ref.canAskUser ? 'on-request' : 'never', ...(ref.canAskUser ? { approvalsReviewer: ref.autoReview ? 'auto_review' : 'user' } : {}), config: { ...(session.info.effort ? { model_reasoning_effort: session.info.effort } : {}), ...(ref.canAskUser ? { 'features.default_mode_request_user_input': true } : {}) } })
+    this.resumeNeeded.delete(ref.threadId)
   }
 
   // Codex changes reviewers at the next turn; the plugin reviews until then.
   setAutoMode(session: Session) {
     this.autoReview.add(session.info.id)
+    session.setNativeRef({ ...session.nativeRef, autoReview: true })
   }
 
+  isBusy(session: Session) { return this.starting.has(session) || !!session.activeTurnId || [...this.pending.values()].some((p) => p.threadId === session.info.id && ['turn/start', 'turn/steer', 'thread/resume', 'thread/unarchive'].includes(p.method)) }
+
   async interrupt(session: Session): Promise<void> {
+    if (this.starting.has(session) && !session.activeTurnId) this.interruptedStarts.add(session)
     for (const id of this.pendingApprovals(session)) this.resolveApproval(session, id, 'deny')
     for (const [id, q] of this.questions) if (q.session === session) {
       this.questions.delete(id)
@@ -238,15 +358,23 @@ export class CodexAdapter implements Provider {
   }
 
   dispose() {
+    for (const session of this.sessions.values()) session.dropInputs()
     this.proc?.kill()
   }
 
   disposeSession(session: Session) {
+    this.disposed.set(session, (this.disposed.get(session) ?? 0) + 1)
+    session.dropInputs()
+    for (const [id, p] of this.pending) if (p.threadId === session.info.id && p.method !== 'thread/archive') { this.pending.delete(id); p.reject(new Error('Codex session stopped')) }
     if (this.proc) void this.interrupt(session).catch(() => {})
     for (const [id, a] of this.approvals) if (a.session === session) this.approvals.delete(id)
     for (const [id, q] of this.questions) if (q.session === session) this.questions.delete(id)
     if (this.sessions.get(session.info.id) === session) this.sessions.delete(session.info.id)
+    this.turnListeners.get(session)?.()
+    this.turnListeners.delete(session)
+    void this.setArchived(session, true, true)
     this.autoReview.delete(session.info.id)
+    this.interruptedStarts.delete(session)
   }
 
   private onMessage(msg: Json) {
@@ -324,7 +452,7 @@ export class CodexAdapter implements Provider {
     for (const question of q.questions) out[question.id] = { answers: answers?.[question.id]?.length ? answers[question.id] : [fallback] }
     this.send({ id: q.rpcId, result: { answers: out } })
     session.push({ type: 'question_answered', questionId, how: defer ? 'deferred' : 'answered' })
-    if (defer) await this.interrupt(session)
+    if (defer) void session.stop(this, 'host', { preserveQueue: true }).catch(() => {})
     return true
   }
 
@@ -356,7 +484,7 @@ export class CodexAdapter implements Provider {
     const emit = (body: AgentEventBody) => session.push(body, { codex: { method } })
     switch (method) {
       case 'turn/started':
-        if (session.activeTurnId !== p.turn.id) emit({ type: 'turn_started', turnId: p.turn.id })
+        if (!session.hasTurnStarted(p.turn.id)) emit({ type: 'turn_started', turnId: p.turn.id })
         return
       case 'item/started':
         if (item.type === 'commandExecution')
@@ -381,10 +509,13 @@ export class CodexAdapter implements Provider {
         if (last) emit({ type: 'usage', inputTokens: last.inputTokens ?? 0, outputTokens: last.outputTokens ?? 0, cachedInputTokens: last.cachedInputTokens ?? 0 })
         return
       }
+      case 'item/agentMessage/delta':
+        session.live = { activity: 'responding', partialText: (session.live?.partialText ?? '') + (p.delta ?? ''), updatedAt: Date.now() }
+        return
       case 'turn/completed': {
         const t = p.turn
         const status = t.status === 'interrupted' ? 'interrupted' : t.status === 'failed' ? 'failed' : 'completed'
-        emit({ type: 'turn_completed', turnId: t.id, status, finalText: this.turnText.get(t.id) ?? '', error: errorText(t.error?.message) })
+        emit({ type: 'turn_completed', turnId: t.id, status, reason: codexEndReason(status, t.error), finalText: this.turnText.get(t.id) ?? session.live?.partialText ?? '', error: errorText(t.error?.message) })
         this.turnText.delete(t.id)
         return
       }
@@ -449,6 +580,35 @@ export class CodexAdapter implements Provider {
         })
     }
   }
+}
+
+export function codexEndReason(status: string, error: Json): EndReason {
+  if (status === 'interrupted') return 'interrupted'
+  if (status === 'completed') return 'end_turn'
+  const info = error?.codexErrorInfo
+  const code = typeof info === 'string' ? info : info && typeof info === 'object' ? Object.keys(info)[0] : null
+  const http = error?.httpStatusCode ?? (info && typeof info === 'object' ? Object.values(info).find((v: any) => v?.httpStatusCode)?.httpStatusCode : null)
+  if (Number(http) === 429) return 'rate_limited'
+  if ([401, 403].includes(Number(http))) return 'auth'
+  switch (code) {
+    case 'usageLimitExceeded': case 'sessionBudgetExceeded': return 'quota_exhausted'
+    case 'contextWindowExceeded': return 'max_tokens'
+    case 'activeTurnNotSteerable': return 'error'
+    case 'tooManyDenials': case 'tooManyPendingApprovals': case 'approvalDenied': case 'permissionDenied': return 'permission_denied'
+    case 'maxTurnRequests': return 'max_requests'
+    case 'refusal': case 'cyberPolicy': case 'misalignmentPolicyViolation': case 'misalignmentPolicy': return 'refusal'
+    case 'unauthorized': case 'authenticationFailed': return 'auth'
+    case 'rateLimitExceeded': return 'rate_limited'
+  }
+  const message = String(error?.message ?? (typeof error === 'string' ? error : '')).toLowerCase()
+  if (/\b(?:rate[ _-]?limit(?:ed| exceeded)?|429)\b/.test(message)) return 'rate_limited'
+  if (/\b(?:auth|authentication|unauthorized|401|403)\b/.test(message)) return 'auth'
+  if (/\b(?:quota|usage[ _-]?limits?|insufficient_quota|session[ _-]?budget)\b/.test(message)) return 'quota_exhausted'
+  if (/\b(?:context[ _-]?window|token[ _-]?limit)\b/.test(message)) return 'max_tokens'
+  if (/\b(?:denials|permission[ _-]?denied)\b/.test(message)) return 'permission_denied'
+  if (/\b(?:max[ _-]?requests|max[ _-]?turn[ _-]?requests)\b/.test(message)) return 'max_requests'
+  if (/\b(?:refusal|cyberpolicy|misalignmentpolicy)\b/.test(message)) return 'refusal'
+  return 'error'
 }
 
 function errorText(raw: string | undefined): string | undefined {

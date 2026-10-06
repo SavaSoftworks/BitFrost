@@ -13,7 +13,7 @@ import path from 'node:path'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import readline from 'node:readline/promises'
-import { CACHE, CONFIG, RUN_DIR, canonical, loadConfig, resolveBinary } from './config.ts'
+import { CACHE, CONFIG, DATA_DIR, RUN_DIR, canonical, loadConfig, resolveBinary } from './config.ts'
 import { PROVIDERS } from './providers/index.ts'
 import { LABEL, blue, bold, dim, done, fail, note, short, step, task, yellow } from './ui.ts'
 
@@ -115,6 +115,7 @@ export function planOf(claude = findClaude()): Plan {
       ...profilesOf().filter(hasPlugin).map((profile) => ({ label: 'Claude Code plugin', path: pluginIn(profile) })),
       ...PROVIDERS.flatMap((p) => p.uninstall?.(true) ?? []).map((i) => ({ label: i.label, path: entryIn(i.path) })),
       ...file('App files', DATA),
+      ...(DATA_DIR !== DATA ? file('Subagent history', DATA_DIR) : []),
       ...(ours() ? [{ label: 'Command', path: BIN }] : []),
       ...file('Model list cache', path.dirname(CACHE)),
       ...file('Helper runtime files', RUN_DIR),
@@ -226,6 +227,7 @@ export async function uninstall(helper: Helper, opts: Options = {}, ask: (plan: 
     for (const p of PROVIDERS) for (const i of p.uninstall?.() ?? []) done(i.label, entryIn(i.path))
     if (ours()) await remove(BIN, 'Command')
     await remove(DATA, 'App files')
+    if (DATA_DIR !== DATA) await remove(DATA_DIR, 'Subagent history')
     await remove(path.dirname(CACHE), 'Model list cache')
     await remove(RUN_DIR, 'Helper runtime files')
   }

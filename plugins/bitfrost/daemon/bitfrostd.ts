@@ -10,7 +10,7 @@
 // GET /status: providers, leases and sessions.
 // POST /shutdown: exit when no agent runs.
 // POST /leases: create a lease for an allowed profile.
-// POST /leases/:id: renew a lease.
+// POST /leases/:id: renew a lease; the reply carries agentsAt, when the /agents list was last built.
 // DELETE /leases/:id: release a lease and stop its agents.
 // GET /agents?refresh=1: discover models as subagent definitions.
 // POST /sessions: start an agent with a valid lease.
@@ -18,7 +18,11 @@
 // GET /sessions/:id: session state and event count.
 // DELETE /sessions/:id: stop and release a session.
 // POST /sessions/:id/input: send text.
-// POST /sessions/:id/interrupt: stop the turn.
+// POST /sessions/:id/interrupt: stop and confirm the turn.
+// POST /sessions/:id/attach: bind a saved session to a lease.
+// GET /sessions/:id/summary: activity, tools, usage and inbox.
+// GET /sessions/:id/messages: persisted turns and messages.
+// GET /sessions/:id/messages/:itemId: message with full detail.
 // POST /sessions/:id/auto: switch to auto review.
 // GET /sessions/:id/events?after=N&waitMs=M: wait for new events.
 // GET /sessions/:id/items/:itemId?waitMs=M: wait for an item to finish.
@@ -33,9 +37,11 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { spawn } from 'node:child_process'
+import { Store } from './store.ts'
+import { killOwnedGroups } from './process.ts'
 import { Session } from './session.ts'
 import { buildAgents, describe, nameTable, selectModels, type AgentDef, type HarnessModel } from './registry.ts'
-import { CACHE, CONFIG, LOCK, LOG, RUN_DIR, SOCKET, VERSION, canonical, configKey, loadConfig, log, providerEnv, takeLock, type Config } from './config.ts'
+import { CACHE, CONFIG, DATA_DIR, LOCK, LOG, RUN_DIR, SOCKET, VERSION, canonical, configKey, loadConfig, log, providerEnv, takeLock, type Config } from './config.ts'
 import { LEASE_TTL_MS, SessionTable } from './leases.ts'
 import type { Provider, ProviderFactory } from './provider.ts'
 import { PROVIDERS } from './providers/index.ts'
@@ -121,11 +127,18 @@ function serve() {
     log(`another bitfrostd is running; pid ${process.pid} exits`)
     process.exit(0)
   }
+  fs.mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 })
+  fs.chmodSync(DATA_DIR, 0o700)
+  const dataLock = path.join(DATA_DIR, 'daemon.lock')
+  const locks = [LOCK]
   process.on('exit', () => {
     try {
-      if (fs.readFileSync(LOCK, 'utf8') === String(process.pid)) fs.rmSync(LOCK)
+      for (const lock of locks) if (fs.readFileSync(lock, 'utf8') === String(process.pid)) fs.rmSync(lock)
     } catch {}
   })
+
+  if (!takeLock(dataLock)) { log(`another bitfrostd owns ${DATA_DIR}; pid ${process.pid} exits`); process.exit(0) }
+  locks.push(dataLock)
 
   // Keep the last valid config while edits are invalid; refuse new leases.
   let lastGood: Config | null = null
@@ -143,11 +156,56 @@ function serve() {
     return { ...(lastGood ?? c), error: c.error, warnings: c.warnings }
   }
 
+  const store = new Store(path.join(DATA_DIR, 'bitfrost.db'), log, true)
+  // Only a database error turns persistence off; other bugs are logged and the helper carries on.
+  const lastResort = (kind: string, error: unknown) => {
+    try { log(`${kind}: ${error instanceof Error ? error.stack ?? error.message : String(error)}`) } catch {}
+    if ((error as NodeJS.ErrnoException)?.code === 'ERR_SQLITE_ERROR') store.degrade(error)
+  }
+  process.on('uncaughtException', (error) => lastResort('uncaught exception', error))
+  process.on('unhandledRejection', (error) => lastResort('unhandled rejection', error))
   const providers = new Map<string, Provider>()
   const providerConfigs = new Map<string, string>()
   const providerStamps = new Map<string, string>()
   const providerFor = (s: Session) => providers.get(s.info.harness)
   const table = new SessionTable(providerFor, log)
+  killOwnedGroups(store.processes().flatMap((r) => {
+    try { return [JSON.parse(r.process_identity)] } catch (error) { store.degrade(error); return [] }
+  }), log)
+  const recovered = new Set<string>()
+  // Keep the close time and reason of a session that was already closed.
+  const closeRecovered = (session: Session) => {
+    if (session.info.closedAt == null) {
+      session.info.closedAt = Date.now()
+      session.info.closeReason = 'daemon_restart'
+    }
+    session.detach()
+    recovered.add(session.info.id)
+  }
+  for (const turn of store.unfinished()) {
+    const session = table.load(turn.session_id, store)
+    if (!session) continue
+    session.activeTurnId = turn.id
+    for (const input of store.pending(session.info.id)) session.push({ type: 'input_dropped', inputId: input.id })
+    const text = session.events.findLast((e) => e.type === 'text' && e.seq >= turn.seq_start)
+    session.push({ type: 'turn_completed', turnId: turn.id, status: 'interrupted', reason: 'daemon_restart', finalText: text?.type === 'text' ? text.text : '' })
+    closeRecovered(session)
+  }
+  for (const row of store.db.prepare("SELECT DISTINCT session_id FROM inbox WHERE state='pending'").all()) {
+    const session = table.load(String(row.session_id), store)
+    if (!session) continue
+    for (const input of store.pending(session.info.id)) session.push({ type: 'input_dropped', inputId: input.id })
+    closeRecovered(session)
+  }
+  for (const row of store.openSessions()) {
+    const session = table.load(row.id, store)
+    if (session && !recovered.has(row.id)) closeRecovered(session)
+  }
+  store.forgetProcesses()
+  store.retain(readConfig().retention)
+  const retentionTimer = setInterval(() => { store.retain(readConfig().retention); table.retainCache(store) }, 24 * 60 * 60_000)
+  retentionTimer.unref()
+
   const busy = (id: string) => table.running().some((s) => s.info.harness === id)
   const updated = (p: Provider) => providerStamps.get(p.id) !== appStamp(p) || !!p.moved?.()
 
@@ -165,6 +223,7 @@ function serve() {
         if (busy(f.id)) deferred = true
         else {
           current.dispose?.()
+          for (const session of table.sessions.values()) if (session.info.harness === f.id) { session.info.state = 'detached'; session.save() }
           providers.delete(f.id)
           log(`provider ${f.id}: ${!enabled ? 'turned off' : reconfigured ? 'config changed; restarting it' : 'its app changed on disk; restarting it'}`)
         }
@@ -247,6 +306,7 @@ function serve() {
       fs.writeFileSync(CACHE, JSON.stringify(registry))
       log(`discovery: ${registry.agents.map((a) => a.name).join(', ')}`)
     })().finally(() => (discovering = null)))
+  const registryStale = () => !registry || Date.now() - registry.at > REGISTRY_TTL_MS || registry.configKey !== configKey(readConfig())
 
 
   const json = (res: http.ServerResponse, status: number, body: unknown) => {
@@ -300,13 +360,13 @@ function serve() {
     const waitMs = Math.min(Number(url.searchParams.get('waitMs') ?? 0) || 0, MAX_WAIT_MS)
     try {
       if (req.method === 'GET' && url.pathname === '/health')
-        return json(res, 200, { ok: true, pid: process.pid, version: VERSION, busy: table.running().length > 0, configError: readConfig().error })
+        return json(res, 200, { ok: true, pid: process.pid, version: VERSION, store: { degraded: store.degraded, error: store.error }, busy: table.running().length > 0, configError: readConfig().error })
       if (req.method === 'GET' && url.pathname === '/status') return json(res, 200, status())
       if (req.method === 'POST' && url.pathname === '/shutdown') {
         if (table.running().length) return json(res, 409, { error: 'agents are running' })
         json(res, 200, { ok: true })
         log('shutdown requested')
-        return setTimeout(() => process.exit(0), 50)
+        return setTimeout(() => void shutdown(), 50)
       }
 
       if (parts[0] === 'leases') {
@@ -328,7 +388,9 @@ function serve() {
         if (!parts[1] || !table.leases.has(parts[1])) return json(res, 404, { error: 'no such lease' })
         if (req.method === 'POST') {
           table.renew(parts[1])
-          return json(res, 200, { ok: true })
+          // Keep an open session's model list fresh. A deferred list waits for GET /agents.
+          if (registry?.configKey && registryStale()) discover().catch((e) => log(`discovery: ${(e as Error).message}`))
+          return json(res, 200, { ok: true, agentsAt: registry?.at ?? 0 })
         }
         if (req.method === 'DELETE') {
           table.release(parts[1])
@@ -348,12 +410,7 @@ function serve() {
       }
 
       if (req.method === 'GET' && url.pathname === '/agents') {
-        const config = readConfig()
-        const stale =
-          !registry ||
-          Date.now() - registry.at > REGISTRY_TTL_MS ||
-          registry.configKey !== configKey(config) ||
-          url.searchParams.get('refresh') === '1'
+        const stale = registryStale() || url.searchParams.get('refresh') === '1'
         if (stale) await Promise.race([discover(), new Promise((r) => setTimeout(r, registry ? 8000 : 30_000))])
         const agents = registry?.agents ?? []
         return json(res, 200, { agents: agents.map((a) => ({ ...a, description: describe(a, agents) })), nameTable: nameTable(agents), at: registry?.at ?? 0, hint: registry?.hint ?? null })
@@ -369,7 +426,7 @@ function serve() {
         const effort = body.effort && def.efforts.includes(body.effort) ? body.effort : (def.defaultEffort ?? undefined)
         const provider = providers.get(def.harness)
         if (!provider) return json(res, 404, { error: `${def.harnessName} is not available` })
-        const session = new Session({ id: '', harness: def.harness, agent: def.name, model: def.model, cwd: body.cwd, state: 'running' })
+        const session = new Session({ id: '', harness: def.harness, agent: def.name, model: def.model, effort: effort ?? null, cwd: body.cwd, state: 'idle', title: typeof body.title === 'string' ? body.title : null, leaseId: body.leaseId, claudeSession: body.claudeSession ?? null, claudeAgent: body.claudeAgent ?? null, parentMode: body.parentMode ?? null }, store)
         const id = await provider.spawnSession(session, {
           model: def.model,
           cwd: body.cwd,
@@ -385,36 +442,72 @@ function serve() {
         return json(res, 200, { id, model: def.model, effort: effort ?? null })
       }
 
-      const session = parts[0] === 'sessions' && parts[1] ? table.sessions.get(parts[1]) : undefined
+      const session = parts[0] === 'sessions' && parts[1] ? table.load(parts[1], store) : undefined
       if (!session) return json(res, 404, { error: 'no such session' })
       session.lastSeenAt = Date.now()
+      store.ensure(session)
       const [, , action, itemId] = parts
       if (req.method === 'DELETE' && !action) {
-        table.close(session.info.id, 'deleted')
+        if (!table.close(session.info.id, 'deleted')) {
+          if (session.info.closedAt !== null && session.info.closedAt !== undefined) return json(res, 404, { error: 'no such session' })
+          session.info.closedAt = Date.now()
+          session.info.closeReason = 'deleted'
+          session.save()
+        }
         return json(res, 200, { ok: true })
+      }
+      if (req.method === 'POST' && action === 'attach') {
+        const body = await readBody(req)
+        if (!body.leaseId || !table.leases.has(body.leaseId)) return json(res, 403, { error: 'a valid lease is required' })
+        table.attach(session, body.leaseId, body.claudeSession)
+        return json(res, 200, { ok: true, state: session.info.state, lastSeq: session.lastSeq, agent: session.info.agent, model: session.info.model, effort: session.info.effort ?? null })
+      }
+      if (req.method === 'GET' && !action) return json(res, 200, { ...session.info, events: session.lastSeq })
+      const count = (key: string, fallback: number) => {
+        const value = Number(url.searchParams.get(key) ?? fallback)
+        if (!Number.isSafeInteger(value) || value < 1) throw new HttpError(400, `${key} must be a positive integer`)
+        return value
+      }
+      if (req.method === 'GET' && action === 'summary') return json(res, 200, store.summary(session, count('turns', 1)))
+      if (req.method === 'GET' && action === 'messages') {
+        if (itemId) {
+          const message = store.message(session.info.id, decodeURIComponent(itemId))
+          return json(res, message ? 200 : 404, message ? { message } : { error: 'no such message' })
+        }
+        const since = Number(url.searchParams.get('since') ?? 0)
+        if (!Number.isSafeInteger(since) || since < 0) throw new HttpError(400, 'since must be a non-negative integer')
+        return json(res, 200, store.messages(session.info.id, { turns: count('turns', 1), all: url.searchParams.get('all') === '1', since, limit: count('limit', 200) }))
       }
       const adapter = providerFor(session)
-      if (!adapter) return json(res, 404, { error: `${session.info.harness} is not available` })
-      if (req.method === 'GET' && !action) return json(res, 200, { ...session.info, events: session.events.length })
       if (req.method === 'POST' && action === 'input') {
-        const { text } = await readBody(req)
-        await adapter.sendInput(session, String(text ?? ''))
-        return json(res, 200, { ok: true })
+        const { text, mode = 'auto', sender = 'claude', clientInputId } = await readBody(req)
+        if (clientInputId !== undefined && typeof clientInputId !== 'string') return json(res, 400, { error: 'clientInputId must be a string' })
+        const existing = clientInputId === undefined ? null : session.inputReceipt(clientInputId)
+        if (existing) return json(res, 200, { ok: true, ...existing })
+        if (!['auto','queue','interrupt'].includes(mode)) return json(res, 400, { error: 'mode must be auto, queue or interrupt' })
+        if (!['claude','user'].includes(sender)) return json(res, 400, { error: 'sender must be claude or user' })
+        if (!adapter) return json(res, 404, { error: `${session.info.harness} is not available` })
+        if (!table.leaseIdOf(session.info.id)) return json(res, 403, { error: 'attach this session to a valid lease before sending input' })
+        const receipt = await session.deliver(adapter, String(text ?? ''), mode, sender, clientInputId)
+        return json(res, 200, { ok: true, ...receipt })
       }
       if (req.method === 'POST' && action === 'auto') {
+        if (!adapter) return json(res, 404, { error: `${session.info.harness} is not available` })
         adapter.setAutoMode?.(session)
+        session.info.parentMode = 'auto'
+        session.save()
         log(`session ${session.info.id}: switched to auto mode`)
         return json(res, 200, { ok: true })
       }
       if (req.method === 'POST' && action === 'interrupt') {
-        await adapter.interrupt(session)
-        return json(res, 200, { ok: true })
+        return json(res, 200, { ok: true, how: await session.stop(adapter, 'host') })
       }
       if (req.method === 'GET' && action === 'events') {
         const after = Number(url.searchParams.get('after') ?? 0) || 0
         return json(res, 200, { events: await session.eventsAfter(after, waitMs), state: session.info.state })
       }
       if (req.method === 'GET' && action === 'items' && itemId) return json(res, 200, { event: await session.itemCompletion(itemId, waitMs) })
+      if (!adapter) return json(res, 404, { error: `${session.info.harness} is not available` })
       if (req.method === 'GET' && action === 'approvals') {
         const ids = new Set(adapter.pendingApprovals(session))
         return json(res, 200, { approvals: session.events.filter((e) => e.type === 'approval_requested' && ids.has(e.approvalId)) })
@@ -463,16 +556,28 @@ function serve() {
       if (now - s.lastSeenAt < ABANDONED_MS) continue
       log(`session ${s.info.id}: its subagent stopped asking about it; stopping it`)
       s.lastSeenAt = now // Limit interrupts to one per 90 seconds.
-      providerFor(s)?.interrupt(s).catch(() => {})
+      void s.stop(providerFor(s), 'abandoned')
     }
     if (!discovering && [...providers.values()].some((p) => !busy(p.id) && updated(p))) void discover()
     if (noLeasesSince !== null && now - noLeasesSince > GRACE_MS) {
-      for (const s of table.running()) providerFor(s)?.interrupt(s).catch(() => {})
-      log('no hosts; exiting')
-      setTimeout(() => process.exit(0), 500)
+      void shutdown()
     }
   }, 5000)
-  for (const sig of ['SIGINT', 'SIGTERM'] as const) process.on(sig, () => process.exit(0))
+  let shuttingDown = false
+  async function shutdown() {
+    if (shuttingDown) return
+    shuttingDown = true
+    try {
+      server.close()
+      log('shutdown: stopping agents')
+      await Promise.all(table.running().map((s) => s.stop(providerFor(s), 'shutdown')))
+      for (const provider of providers.values()) provider.dispose?.()
+      store.close()
+    } finally {
+      process.exit(0)
+    }
+  }
+  for (const sig of ['SIGINT', 'SIGTERM'] as const) process.on(sig, () => void shutdown())
 }
 
 function setup(id: string | undefined) {

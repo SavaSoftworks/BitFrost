@@ -127,7 +127,7 @@ Once Claude understands the assignment, ask it to save that as a rule in your CL
 
 ## Known Limitations
 
-- GLM needs a Z.ai individual coding plan. Teams, Start plans, free usage, bigmodel and other providers added in ZCode aren't supported yet.
+- GLM needs a Z.ai individual coding plan. ZCode only offers Teams, Start plans, free usage, bigmodel and its other providers inside its desktop app, not to outside tools, so BitFrost can't use them.
 - Windows is not a supported platform. It may work via WSL, but it also may not.
 - Gemini CLI only works with Gemini Code Assist Standard/Enterprise or a paid Gemini API key. Google retired it for personal accounts in June 2026. Its replacement, Antigravity CLI (`agy`), isn't supported yet.
 - GLM via ZCode is only tested on Linux, with ZCode in `/opt/ZCode`. On macOS, BitFrost doesn't look for ZCode in its usual place yet.
