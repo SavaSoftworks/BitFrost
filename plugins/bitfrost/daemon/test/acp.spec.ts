@@ -105,10 +105,11 @@ test('models on the allowlist are listed with their own thought levels and real 
     assert.strictEqual(by['opencode/big-pickle'].provider, 'opencode')
     assert.strictEqual(by['opencode/big-pickle'].isDefault, true)
     assert.strictEqual(by['openrouter/acme/widget-1'].provider, 'acme')
+    // The close is not awaited, so wait for the fake to see it.
+    await until('the throwaway session to close', () => run.sent().some((m) => m.method === 'session/close'))
     const sent = run.sent()
     assert.deepStrictEqual(sent.filter((m) => m.method === 'session/set_config_option').map((m) => m.params.value), ['opencode-go/deepseek-v4-flash', 'opencode-go/glm-5.3'])
     assert.ok(!sent.some((m) => m.method === 'session/prompt'))
-    assert.ok(sent.some((m) => m.method === 'session/close'), 'the throwaway session is closed')
     assert.ok(!fs.existsSync(sent.find((m) => m.method === 'session/new').params.cwd), 'the throwaway folder is removed')
   } finally {
     run.stop()

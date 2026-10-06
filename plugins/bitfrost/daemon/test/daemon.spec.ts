@@ -10,6 +10,7 @@ import { after, before, test } from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import http from 'node:http'
+import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
@@ -38,6 +39,24 @@ const writeConfig = (body: unknown) => fs.writeFileSync(configFile, typeof body 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
 type Reply = { status: number; body: any }
+
+// Sent by hand: the helper answers 413 from the header and hangs up, which can
+// cut off a client still writing a real 17 MB body (EPIPE on a busy machine).
+function oversized(urlPath: string): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const conn = net.connect(socket)
+    let data = ''
+    conn.setEncoding('utf8')
+    conn.on('data', (c) => (data += c))
+    conn.on('error', () => {})
+    conn.on('close', () => {
+      const m = /^HTTP\/1\.1 (\d{3})/.exec(data)
+      if (m) resolve(Number(m[1]))
+      else reject(new Error(`no reply to an oversized body: ${JSON.stringify(data)}`))
+    })
+    conn.write(`POST ${urlPath} HTTP/1.1\r\nhost: localhost\r\ncontent-type: application/json\r\ncontent-length: ${17 * 1024 * 1024}\r\n\r\n{"host":"`)
+  })
+}
 
 function call(method: string, urlPath: string, body?: unknown, headers: Record<string, string> = {}): Promise<Reply> {
   return new Promise((resolve, reject) => {
@@ -240,8 +259,7 @@ test('an invalid config.json refuses leases with 503 and shows in /health', asyn
 test('bad request bodies get 400, and oversized ones 413', async () => {
   const bad = await call('POST', '/leases', '{not json')
   assert.strictEqual(bad.status, 400)
-  const big = await call('POST', '/leases', JSON.stringify({ host: 'x'.repeat(17 * 1024 * 1024) }))
-  assert.strictEqual(big.status, 413)
+  assert.strictEqual(await oversized('/leases'), 413)
   assert.strictEqual((await call('GET', '/health')).status, 200)
 })
 
