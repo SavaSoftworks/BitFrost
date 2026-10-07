@@ -21,6 +21,7 @@ Object.assign(process.env, {
   XDG_DATA_HOME: path.join(home, 'data'),
   XDG_CONFIG_HOME: path.join(home, 'config'),
   XDG_CACHE_HOME: path.join(home, 'cache'),
+  BITFROST_DATA_DIR: path.join(home, 'persistent'),
   BITFROST_RUNTIME_DIR: path.join(home, 'run'),
   BITFROST_BIN_DIR: path.join(home, 'bin'),
 })
@@ -45,6 +46,8 @@ const write = (f: string, body: string) => {
 
 beforeEach(() => {
   for (const f of [calls, `${calls}.done`]) fs.rmSync(f, { force: true })
+  write(path.join(home, 'persistent', 'bitfrost.db'), 'database')
+  write(path.join(home, 'persistent', 'bitfrost.db-wal'), 'wal')
   write(path.join(data, 'versions', '0.8.3', 'plugins', 'bitfrost', 'bin', 'bitfrostd'), '')
   fs.rmSync(path.join(data, 'current'), { force: true })
   fs.symlinkSync('versions/0.8.3', path.join(data, 'current'))
@@ -89,7 +92,7 @@ test('yes to both removes the config too', async () => {
 test('the plan lists what goes in each group, before anything changes', async () => {
   const { planOf } = await import('../uninstall.ts')
   const plan = planOf()
-  assert.deepStrictEqual(plan.program.map((i) => i.label), ['Claude Code plugin', 'Claude Code plugin', 'GLM bridge in ZCode', 'App files', 'Command', 'Model list cache', 'Helper runtime files'])
+  assert.deepStrictEqual(plan.program.map((i) => i.label), ['Claude Code plugin', 'Claude Code plugin', 'GLM bridge in ZCode', 'App files', 'Subagent history', 'Command', 'Model list cache', 'Helper runtime files'])
   assert.deepStrictEqual(plan.program.filter((i) => i.label === 'Claude Code plugin').map((i) => i.path), ['bitfrost@bitfrost from ~/.claude', 'bitfrost@bitfrost from ~/.claude-work'])
   assert.deepStrictEqual(plan.config.map((i) => i.path), [config])
   // ZCode's config file stays; only BitFrost's entry leaves it.
@@ -119,7 +122,7 @@ test('everything BitFrost added is removed, from every allowed profile, and noth
     `${other} plugin uninstall bitfrost@bitfrost --scope user`,
     `${other} plugin marketplace remove bitfrost`,
   ])
-  for (const p of [data, link, path.join(home, 'config', 'bitfrost'), path.join(home, 'cache', 'bitfrost'), path.join(home, 'run'), `${zcodeConfig}.bak-bitfrost`, cacheCopy(path.join(home, '.claude')), cacheCopy(other)]) {
+  for (const p of [data, path.join(home, 'persistent'), link, path.join(home, 'config', 'bitfrost'), path.join(home, 'cache', 'bitfrost'), path.join(home, 'run'), `${zcodeConfig}.bak-bitfrost`, cacheCopy(path.join(home, '.claude')), cacheCopy(other)]) {
     assert.ok(!fs.existsSync(p), `${p} is gone`)
   }
   assert.deepStrictEqual(JSON.parse(fs.readFileSync(zcodeConfig, 'utf8')), { theme: 'dark', plugins: { dirs: ['/somewhere/else'] } })

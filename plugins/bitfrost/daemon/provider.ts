@@ -32,6 +32,7 @@ export type SpawnRequest = {
   canAskUser?: boolean
   autoReview?: boolean
   title?: string
+  ephemeral?: boolean
 }
 
 export type ProviderCapabilities = {
@@ -56,11 +57,14 @@ export interface Provider {
 
   listModels(): Promise<HarnessModel[]>
   spawnSession(session: Session, req: SpawnRequest): Promise<string>
-  sendInput(session: Session, text: string): Promise<void>
+  sendInput(session: Session, text: string): Promise<'started' | 'steered' | 'queued'>
+  attach?(session: Session, nativeRef: any): Promise<void>
+  kill?(session: Session): boolean
+  isBusy?(session: Session): boolean
   interrupt(session: Session): Promise<void>
   setAutoMode?(session: Session): void
   dispose?(): void
-  // Release session state only after it stops; the session will never be used again.
+  // Release adapter state only after the session stops.
   disposeSession?(session: Session): void
 
   pendingApprovals(session: Session): string[]
@@ -75,6 +79,7 @@ export interface Provider {
 
 export type ProviderEnv = {
   runDir: string
+  dataDir?: string
   socket: string
   log: (msg: string) => void
   config: Json // This provider's entry in config.json.

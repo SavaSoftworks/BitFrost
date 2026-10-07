@@ -105,6 +105,28 @@ No. If you want to anyway: `bitfrost restart`.
 
 Say it: "have sol6 on high review this".
 
+### Can Claude see what a subagent is doing?
+
+Yes. Ask "what is glm doing?". Claude checks BitFrost for the current step, recent tool calls, latest text, token usage and run time.
+
+### Can I message a subagent while it works?
+
+Yes, through Claude. Codex models take the message inside their current turn. GLM and opencode models get it when their turn ends. If it can't wait, ask Claude to interrupt: the subagent stops its current step and carries on in the same conversation with your message. Claude is told which of these happened.
+
+### Can I resume a subagent after restarting Claude?
+
+Yes. Reopen the conversation and ask Claude to continue it. It picks up in the same conversation inside its app. For opencode this only works if your opencode version can reopen sessions.
+
+### Where does BitFrost keep subagent history?
+
+In `~/.local/share/bitfrost/bitfrost.db`, or `~/Library/Application Support/BitFrost/bitfrost.db` on macOS. Raw events are kept 30 days after a session ends and messages 180 days. To change that:
+
+```json
+{ "retention": { "eventsDays": 30, "messagesDays": 180 } }
+```
+
+It holds the subagents' commands and tool output, so it can contain anything they read. Only your user can open it. `bitfrost uninstall` deletes it.
+
 ### Who answers a subagent's permission requests?
 
 You, never Claude. No answer means Deny. In auto mode, a safety review decides instead.

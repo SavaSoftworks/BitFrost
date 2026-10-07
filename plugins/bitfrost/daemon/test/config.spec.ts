@@ -126,3 +126,13 @@ test('describe leaves out the alias sentence when a model has no aliases', () =>
   assert.doesNotMatch(text, /\s\./)
   assert.strictEqual(text, "GPT-X, OpenAI's model gpt-x, running in the real Codex app on this machine. A model. Works in the task's directory and can read, edit and run commands there.")
 })
+
+
+test('retention defaults, overrides and invalid shapes are checked', (t) => {
+  const file = path.join(tempDir(t),'config.json')
+  assert.deepEqual(loadConfig(file).retention,{ eventsDays:30,messagesDays:180 })
+  fs.writeFileSync(file,JSON.stringify({ retention:{ eventsDays:2,messagesDays:10 } }))
+  assert.deepEqual(loadConfig(file).retention,{ eventsDays:2,messagesDays:10 })
+  for (const value of [[],{ eventsDays:-1 },{ messagesDays:'forever' }]) assert.ok(validateConfig({ retention:value }).errors.length)
+  assert.deepEqual(validateConfig({ retention:{ eventsDays:0,messagesDays:180 } }).warnings,[])
+})

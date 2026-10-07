@@ -12,6 +12,9 @@ export type FileChange = {
   diff: string
 }
 
+export type EndReason = 'end_turn' | 'interrupted' | 'restarted' | 'stop_timeout' | 'daemon_restart' | 'permission_denied' | 'quota_exhausted' | 'rate_limited' | 'auth' | 'max_tokens' | 'max_requests' | 'refusal' | 'wrong_model' | 'crashed' | 'error'
+export type Delivery = 'started' | 'steered' | 'queued' | 'restarted'
+
 export type Decision = 'allow' | 'allow_session' | 'deny'
 
 export type Question = {
@@ -24,6 +27,10 @@ export type Question = {
 }
 
 export type AgentEventBody =
+  | { type: 'user_input'; inputId: string; clientInputId?: string; text: string; sender: 'claude' | 'user'; delivery: Delivery }
+  | { type: 'input_consumed'; inputId: string; turnId: string }
+  | { type: 'interrupt_requested'; source: string }
+  | { type: 'input_dropped'; inputId: string }
   | { type: 'turn_started'; turnId: string }
   | { type: 'text'; itemId: string; text: string }
   | { type: 'reasoning'; itemId: string; text: string }
@@ -54,6 +61,10 @@ export type AgentEventBody =
       status: 'completed' | 'interrupted' | 'failed'
       finalText: string
       error?: string
+      reason: EndReason
+      providerErrorCode?: string
+      plan?: string
+      continues?: boolean
     }
   | { type: 'session_failed'; error: string }
   // Optional tool and input fields match the corresponding Claude Code tool.

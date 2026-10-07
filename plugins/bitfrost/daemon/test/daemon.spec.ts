@@ -103,8 +103,8 @@ async function newLease(hostSessionId: string): Promise<string> {
   return r.body.leaseId
 }
 
-async function startSession(lease: string): Promise<{ id: string; approval: any }> {
-  const r = await call('POST', '/sessions', { leaseId: lease, agent: 'gpt-test', cwd: work, prompt: 'list the directory', canAskUser: true })
+async function startSession(lease: string, extra: Record<string, unknown> = {}): Promise<{ id: string; approval: any }> {
+  const r = await call('POST', '/sessions', { leaseId: lease, agent: 'gpt-test', cwd: work, prompt: 'list the directory', canAskUser: true, ...extra })
   assert.strictEqual(r.status, 200, JSON.stringify(r.body))
   const id = r.body.id
   const approval = await until('the approval request', async () => (await call('GET', `/sessions/${id}/approvals`)).body.approvals[0])
@@ -115,6 +115,7 @@ function daemonEnv(): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {
     ...process.env,
     BITFROST_RUNTIME_DIR: runDir,
+    BITFROST_DATA_DIR: path.join(root, 'persistent'),
     XDG_CONFIG_HOME: path.join(root, 'config'),
     XDG_CACHE_HOME: path.join(root, 'cache'),
     XDG_DATA_HOME: path.join(root, 'data'),
@@ -204,7 +205,7 @@ test('a session runs one turn with an approval, then DELETE lets it go', async (
   assert.deepStrictEqual((await call('GET', '/status')).body.sessions, listed.body.sessions)
 
   assert.strictEqual((await call('DELETE', `/sessions/${id}`)).status, 200)
-  assert.strictEqual((await call('GET', `/sessions/${id}`)).status, 404)
+  assert.strictEqual((await call('GET', `/sessions/${id}`)).body.state, 'detached')
   assert.strictEqual((await call('DELETE', `/sessions/${id}`)).status, 404)
   assert.deepStrictEqual((await call('GET', '/sessions')).body.sessions, [])
   assert.match(daemonLog(), new RegExp(`session ${id}: let go \\(deleted\\)`))
@@ -214,11 +215,69 @@ test('releasing a lease stops its running session and lets it go', async () => {
   const lease = await newLease('host-2')
   const { id } = await startSession(lease)
   assert.strictEqual((await call('DELETE', `/leases/${lease}`)).status, 200)
-  assert.strictEqual((await call('GET', `/sessions/${id}`)).status, 404)
+  assert.strictEqual((await call('GET', `/sessions/${id}`)).body.state, 'detached')
   await until('the helper to be idle', async () => (await call('GET', '/health')).body.busy === false)
   const sent = fs.readFileSync(sentLog, 'utf8').trim().split('\n').map((l) => JSON.parse(l))
   assert.ok(sent.some((m) => m.result?.decision === 'decline'))
   assert.strictEqual((await call('DELETE', `/leases/${lease}`)).status, 404)
+})
+
+test('summary and messages endpoints report persisted turns, tools, input and full details', async () => {
+  const { id,approval } = await startSession(leaseId,{ effort:'high',title:'Review',claudeSession:'lead',claudeAgent:'worker',parentMode:'auto' })
+  const active = await call('GET',`/sessions/${id}/summary`)
+  assert.equal(active.status,200)
+  assert.equal(active.body.session.title,'Review')
+  assert.equal(active.body.session.effort,'high')
+  assert.equal(active.body.inbox.items.length,0)
+  assert.equal(active.body.inbox.counts.consumed,1)
+  await call('POST',`/sessions/${id}/approvals/${approval.approvalId}`,{ decision:'allow' })
+  await until('completion',async () => (await call('GET',`/sessions/${id}`)).body.state === 'idle')
+  const summary = (await call('GET',`/sessions/${id}/summary?turns=2`)).body
+  assert.equal(summary.turns[0].reason,'end_turn')
+  assert.equal(summary.latestText.text,'It listed the directory: 2 entries.')
+  assert.deepEqual(summary.usage,{ inputTokens:1200,outputTokens:45,cachedTokens:300,requests:1 })
+  assert.equal(summary.recentTools[0].name,'Bash')
+  const first = (await call('GET',`/sessions/${id}/messages?all=1&limit=1`)).body
+  assert.equal(first.truncated,true)
+  const rest = (await call('GET',`/sessions/${id}/messages?all=1&since=${first.nextSince}`)).body
+  assert.equal(rest.truncated,false)
+  const command = rest.turns[0].messages.find((m: any) => m.kind === 'command')
+  const detail = (await call('GET',`/sessions/${id}/messages/${command.itemId}`)).body.message
+  assert.match(detail.detail.output,/^total 4\n/)
+  assert.equal(detail.status,'ok')
+  assert.equal((await call('GET',`/sessions/${id}/messages/missing`)).status,404)
+  assert.equal((await call('GET',`/sessions/${id}/summary?turns=-1`)).status,400)
+  assert.equal((await call('GET',`/sessions/${id}/messages?limit=0`)).status,400)
+  const info = (await call('GET',`/sessions/${id}`)).body
+  assert.equal(info.claudeSession,'lead')
+  assert.equal(info.claudeAgent,'worker')
+  assert.equal(info.parentMode,'auto')
+  await call('DELETE',`/sessions/${id}`)
+  assert.equal((await call('GET',`/sessions/${id}/messages?all=1`)).body.turns[0].finalText,'It listed the directory: 2 entries.')
+})
+
+test('HTTP input receipts queue without steering, continue polling, and stop confirms completion', async () => {
+  const { id,approval } = await startSession(leaseId)
+  const steered = await call('POST',`/sessions/${id}/input`,{ text:'extra guidance' })
+  assert.equal(steered.body.delivery,'steered')
+  const queued = await call('POST',`/sessions/${id}/input`,{ text:'next turn',mode:'queue',sender:'user' })
+  assert.equal(queued.body.delivery,'queued')
+  assert.equal((await call('GET',`/sessions/${id}/summary`)).body.inbox.queued,1)
+  await call('POST',`/sessions/${id}/approvals/${approval.approvalId}`,{ decision:'allow' })
+  const nextApproval = await until('next approval',async () => {
+    const approvals = (await call('GET',`/sessions/${id}/approvals`)).body.approvals
+    return approvals.find((a: any) => a.approvalId !== approval.approvalId)
+  })
+  assert.ok(nextApproval)
+  const events = (await call('GET',`/sessions/${id}/events`)).body.events
+  assert.equal(events.find((e: any) => e.type === 'turn_completed').continues,true)
+  assert.ok(events.some((e: any) => e.type === 'input_consumed' && e.inputId === queued.body.inputId))
+  const stopped = await call('POST',`/sessions/${id}/interrupt`)
+  assert.deepEqual(stopped.body,{ ok:true,how:'graceful' })
+  assert.equal((await call('GET',`/sessions/${id}`)).body.state,'idle')
+  assert.deepEqual((await call('POST',`/sessions/${id}/interrupt`)).body,{ ok:true,how:'idle' })
+  assert.equal((await call('POST',`/sessions/${id}/input`,{ mode:'bad' })).status,400)
+  await call('DELETE',`/sessions/${id}`)
 })
 
 test('a config change shows in /agents without ?refresh=1', async () => {
@@ -231,6 +290,21 @@ test('a config change shows in /agents without ?refresh=1', async () => {
   writeConfig(goodConfig())
   const back = await call('GET', '/agents')
   assert.deepStrictEqual(back.body.agents.map((a: any) => a.name), ['gpt-test'])
+})
+
+test('a lease renewal says when the model list changed and rebuilds a stale one', async () => {
+  const lease = await newLease('host-renew')
+  const listed = await call('GET', '/agents')
+  assert.strictEqual((await call('POST', `/leases/${lease}`)).body.agentsAt, listed.body.at)
+
+  // Renewals alone notice the change, with no GET /agents.
+  writeConfig(goodConfig({ models: ['nothing-*'] }))
+  await until('a renewal to report a new list', async () => (await call('POST', `/leases/${lease}`)).body.agentsAt > listed.body.at)
+  assert.deepStrictEqual((await call('GET', '/agents')).body.agents, [])
+
+  writeConfig(goodConfig())
+  assert.deepStrictEqual((await call('GET', '/agents')).body.agents.map((a: any) => a.name), ['gpt-test'])
+  assert.strictEqual((await call('DELETE', `/leases/${lease}`)).status, 200)
 })
 
 test('an invalid config.json refuses leases with 503 and shows in /health', async () => {
@@ -280,6 +354,53 @@ test('an app updated on disk is restarted and its new models listed', async () =
   assert.match(daemonLog(), /provider codex: its app changed on disk; restarting it/)
 
   writeConfig(goodConfig())
+})
+
+test('a stopped session rehydrates from BITFROST_DATA_DIR and resumes the same Codex thread after restart', async () => {
+  writeConfig(goodConfig())
+  await call('GET','/agents')
+  const lease = await newLease('restore')
+  const { id } = await startSession(lease,{ effort:'high' })
+  assert.equal((await call('POST',`/sessions/${id}/interrupt`)).body.how,'graceful')
+  const beforeSeq = (await call('GET',`/sessions/${id}/summary`)).body.lastSeq
+  const old = daemon!
+  const exited = new Promise((r) => old.once('exit',r))
+  old.kill('SIGTERM')
+  await exited
+  daemon = spawn(process.execPath,['--disable-warning=ExperimentalWarning',DAEMON,'serve'],{ env:daemonEnv(),stdio:'ignore' })
+  await until('restarted daemon',async () => (await call('GET','/health')).status === 200)
+  const restored = (await call('GET',`/sessions/${id}/summary`)).body
+  assert.equal(restored.session.state,'detached')
+  assert.equal(restored.lastSeq,beforeSeq)
+  assert.equal((await call('GET',`/sessions/${id}/events?after=${beforeSeq-1}`)).body.events.length,1)
+  const renewed = await newLease('restore')
+  assert.equal((await call('POST',`/sessions/${id}/attach`,{ leaseId:'missing' })).status,403)
+  assert.equal((await call('POST','/sessions/nope/attach',{ leaseId:renewed })).status,404)
+  const attached = await call('POST',`/sessions/${id}/attach`,{ leaseId:renewed,claudeSession:'restored-lead' })
+  assert.deepEqual(attached.body,{ ok:true,state:'detached',lastSeq:beforeSeq,agent:'gpt-test',model:'gpt-test',effort:'high' })
+  assert.equal((await call('POST',`/sessions/${id}/input`,{ text:'continue' })).body.delivery,'started')
+  await until('resumed approval',async () => (await call('GET',`/sessions/${id}/approvals`)).body.approvals[0])
+  const sent = fs.readFileSync(sentLog,'utf8').trim().split('\n').map((l) => JSON.parse(l))
+  assert.ok(sent.some((m) => m.method === 'thread/resume' && m.params.threadId === id))
+  assert.equal((await call('GET',`/sessions/${id}`)).body.claudeSession,'restored-lead')
+  await call('POST',`/sessions/${id}/interrupt`)
+  await call('DELETE',`/sessions/${id}`)
+})
+
+test('an unfinished persisted turn ends with daemon_restart after a hard daemon restart', async () => {
+  const lease = await newLease('hard-restore')
+  const { id } = await startSession(lease)
+  const old = daemon!
+  const exited = new Promise((r) => old.once('exit',r))
+  old.kill('SIGKILL')
+  await exited
+  daemon = spawn(process.execPath,['--disable-warning=ExperimentalWarning',DAEMON,'serve'],{ env:daemonEnv(),stdio:'ignore' })
+  await until('recovered daemon',async () => (await call('GET','/health')).status === 200)
+  const summary = (await call('GET',`/sessions/${id}/summary`)).body
+  assert.equal(summary.session.state,'detached')
+  assert.deepEqual([summary.turns[0].status,summary.turns[0].reason],['interrupted','daemon_restart'])
+  assert.ok(summary.turns[0].endedAt)
+  assert.equal((await call('GET',`/sessions/${id}/messages`)).body.turns[0].reason,'daemon_restart')
 })
 
 // Last: it replaces the helper this file started with one of its own.

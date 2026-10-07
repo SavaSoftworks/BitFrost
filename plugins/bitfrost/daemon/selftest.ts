@@ -174,7 +174,7 @@ async function runOne(factory: ProviderFactory, config: Config, agentName?: stri
     console.log(`agent ${agent.name} = ${agent.displayName}, effort ${effort ?? '-'}, in ${dir}`)
 
     const session = new Session({ id: '', harness: provider.id, agent: agent.name, model: agent.model, cwd: dir, state: 'idle' })
-    await provider.spawnSession(session, { model: agent.model, cwd: dir, prompt: PROMPT, effort, canAskUser: true })
+    await provider.spawnSession(session, { model: agent.model, cwd: dir, prompt: PROMPT, effort, canAskUser: true, ephemeral: true })
 
     let after = 0
     let deadline = Date.now() + TIMEOUT_MS

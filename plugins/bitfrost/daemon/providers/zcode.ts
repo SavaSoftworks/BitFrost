@@ -12,9 +12,10 @@ import os from 'node:os'
 import path from 'node:path'
 import { createInterface } from 'node:readline'
 import { fileURLToPath } from 'node:url'
-import type { AgentEventBody, Decision, Question } from '../events.ts'
+import type { AgentEventBody, Decision, EndReason, Question } from '../events.ts'
 import type { HarnessModel, Provider, ProviderEnv, ProviderFactory, SpawnRequest } from '../provider.ts'
 import type { Session } from '../session.ts'
+import { processIdentity, killOwnedGroup, killOwnedGroups, type ProcessIdentity } from '../process.ts'
 
 const CODING_PLAN = 'account:zai-individual-coding-plan'
 
@@ -51,9 +52,11 @@ type Turn = {
   reasoning: Map<string, string>
   tools: Map<string, { name: string; input: unknown }>
   stderr: string
+  failed: boolean
+  failure: { reason: EndReason; code?: string; error: string } | null
 }
 
-type State = { zcodeSessionId: string | null; cwd: string; mode: string; model: string; choiceFile: string; token: string; grants: Set<string>; turn: Turn | null; queue: string[] }
+type State = { zcodeSessionId: string | null; cwd: string; mode: string; model: string; choiceFile: string; token: string; grants: Set<string>; turn: Turn | null; processes: ProcessIdentity[] }
 
 export class ZCodeAdapter implements Provider {
   readonly id = 'zcode'
@@ -69,6 +72,9 @@ export class ZCodeAdapter implements Provider {
   private log: (msg: string) => void
 
   constructor(config: ZCodeConfig, log: (msg: string) => void) {
+    for (const suffix of ['', '-wal', '-shm']) {
+      try { fs.chmodSync(config.sessionDb + suffix, 0o600) } catch {}
+    }
     this.config = config
     this.location = path.dirname(config.electron)
     this.watch = [config.electron, config.cli]
@@ -132,22 +138,49 @@ export class ZCodeAdapter implements Provider {
     const mode = req.canAskUser ? 'edit' : 'yolo'
     if (req.canAskUser && !this.config.bridgeInstalled()) this.log('zcode: bridge hook not registered; GLM will be refused anything that needs asking (run: bitfrostd setup zcode)')
     const token = randomUUID()
-    this.states.set(id, { zcodeSessionId: null, cwd: req.cwd, mode, model: req.model, choiceFile, token, grants: new Set(), turn: null, queue: [] })
+    this.states.set(id, { zcodeSessionId: null, cwd: req.cwd, mode, model: req.model, choiceFile, token, grants: new Set(), turn: null, processes: [] })
     this.byToken.set(token, session)
+    session.info.effort = req.effort ?? null
+    session.info.plan = CODING_PLAN
+    session.setNativeRef({ zcodeSessionId: null, mode })
+    session.acceptInput(req.prompt, 'started')
     this.runTurn(session, req.prompt)
     return id
   }
 
-  async sendInput(session: Session, text: string): Promise<void> {
+  async sendInput(session: Session, text: string): Promise<'started' | 'queued'> {
     const st = this.states.get(session.info.id)!
-    if (st.turn) st.queue.push(text)
-    else this.runTurn(session, text)
+    if (!st) throw new Error("ZCode can't reopen this session")
+    if (st.turn) { session.queueInput(this, text); return 'queued' }
+    // ZCode never named this session, so nothing can resume: start over with everything it was told.
+    if (!st.zcodeSessionId) {
+      const consumed = new Set(session.events.flatMap((e) => e.type === 'input_consumed' ? [e.inputId] : []))
+      const told = session.events.flatMap((e) => e.type === 'user_input' && consumed.has(e.inputId) ? [e.text] : [])
+      if (told.length) text = `${told.join('\n\n')}\n\n${text}`
+    }
+    this.runTurn(session, text)
+    return 'started'
   }
+
+  async attach(session: Session, ref: Json) {
+    if (!ref?.zcodeSessionId) throw new Error("ZCode can't reopen this session: no native session id was saved")
+    const token = randomUUID()
+    this.states.set(session.info.id, { zcodeSessionId: ref.zcodeSessionId, cwd: session.info.cwd, mode: ref.mode ?? 'edit', model: session.info.model, choiceFile: this.choiceFile(session.info.model, session.info.effort ?? undefined), token, grants: new Set(), turn: null, processes: [] })
+    this.byToken.set(token, session)
+  }
+
+  kill(session: Session) {
+    const turn = this.states.get(session.info.id)?.turn
+    return turn ? killGroup(turn.proc, 'SIGKILL') : false
+  }
+
+  isBusy(session: Session) { return !!this.states.get(session.info.id)?.turn }
 
   async bridge(token: string, input: Json): Promise<Json | null> {
     const session = this.byToken.get(token)
     const st = session && this.states.get(session.info.id)
     if (!session || !st) return deny('Unknown bitfrost run.')
+    if (!st.turn || st.turn.interrupted) return deny('Stopped.')
     const tool = String(input.tool_name ?? '')
     const args = input.tool_input ?? {}
 
@@ -211,7 +244,7 @@ export class ZCodeAdapter implements Provider {
     session.push({ type: 'question_answered', questionId, how: defer ? 'deferred' : 'answered' })
     if (defer) {
       p.resolve(deny('The lead agent will answer this. Stop now; the answer will arrive as the next message.'))
-      await this.interrupt(session)
+      void session.stop(this, 'host', { preserveQueue: true }).catch(() => {})
       return true
     }
     const given: Record<string, string> = {}
@@ -227,37 +260,47 @@ export class ZCodeAdapter implements Provider {
     }
     const st = this.states.get(session.info.id)
     if (!st?.turn) return
-    st.queue = []
     st.turn.interrupted = true
-    st.turn.proc.kill('SIGTERM')
+    killGroup(st.turn.proc, 'SIGTERM')
   }
 
   dispose() {
-    for (const st of this.states.values()) st.turn?.proc.kill('SIGTERM')
+    for (const session of this.byToken.values()) {
+      session.dropInputs()
+      if (!this.states.get(session.info.id)?.turn) killOwnedGroup(session.nativeRef?.process, this.log)
+    }
+    for (const st of this.states.values()) if (st.turn) { st.turn.interrupted = true; killGroup(st.turn.proc, 'SIGKILL') }
+    killOwnedGroups([...this.states.values()].flatMap((st) => st.processes), this.log)
   }
 
   disposeSession(session: Session) {
+    session.dropInputs()
     for (const [id, p] of this.pending) if (p.session === session) {
       this.pending.delete(id)
       p.resolve(deny('Stopped.'))
     }
     const st = this.states.get(session.info.id)
     if (!st) return
-    st.queue = []
     if (st.turn) {
       st.turn.interrupted = true
-      st.turn.proc.kill('SIGTERM')
+      killGroup(st.turn.proc, 'SIGTERM')
     }
+    killOwnedGroups(st.processes, this.log)
     this.byToken.delete(st.token)
     this.states.delete(session.info.id)
   }
 
   private runTurn(session: Session, prompt: string) {
     const st = this.states.get(session.info.id)!
+    for (const suffix of ['', '-wal', '-shm']) {
+      try { fs.chmodSync(this.config.sessionDb + suffix, 0o600) } catch {}
+    }
     const args = [this.config.cli, '-p', prompt, '--output-format', 'stream-json', '--cwd', st.cwd, '--mode', st.mode]
     if (st.zcodeSessionId) args.push('--resume', st.zcodeSessionId)
+    const turnId = `zt_${randomUUID()}`
     const proc = spawn(this.config.electron, args, {
       cwd: st.cwd,
+      detached: true,
       stdio: ['ignore', 'pipe', 'pipe'],
       env: {
         ...process.env,
@@ -267,12 +310,18 @@ export class ZCodeAdapter implements Provider {
         // Keep bitfrost sessions out of ZCode's own conversation list.
         ZCODE_SESSION_DB_PATH: this.config.sessionDb,
         BITFROST_ZCODE_TOKEN: st.token,
+        BITFROST_ZCODE_TURN: turnId,
         BITFROST_SOCKET: this.config.socket,
         BITFROST_NODE: process.execPath,
       },
     })
-    const turn: Turn = { proc, turnId: `zt_${randomUUID()}`, interrupted: false, wrongModel: null, finalText: '', text: new Map(), reasoning: new Map(), tools: new Map(), stderr: '' }
+    const turn: Turn = { proc, turnId, interrupted: false, wrongModel: null, finalText: '', text: new Map(), reasoning: new Map(), tools: new Map(), stderr: '', failed: false, failure: null }
     st.turn = turn
+    if (proc.pid) {
+      const identity = processIdentity(proc.pid, turnId)
+      st.processes.push(identity)
+      session.setNativeRef({ ...session.nativeRef, process: identity })
+    }
     session.push({ type: 'turn_started', turnId: turn.turnId })
     const emit = (body: AgentEventBody, ext?: Json) => session.push(body, ext ? { zcode: ext } : undefined)
 
@@ -287,41 +336,64 @@ export class ZCodeAdapter implements Provider {
       } catch {
         return
       }
-      if (ev.sessionId && !st.zcodeSessionId) st.zcodeSessionId = ev.sessionId
+      if (ev.sessionId && !st.zcodeSessionId) {
+        st.zcodeSessionId = ev.sessionId
+        session.setNativeRef({ ...session.nativeRef, zcodeSessionId: st.zcodeSessionId, mode: st.mode })
+      }
       // Stop if ZCode silently falls back to a different model.
       const ran = ev.type === 'session.updated' ? findModelId(ev.payload) : null
       if (ran && ran !== st.model && !turn.wrongModel) {
         turn.wrongModel = ran
-        proc.kill('SIGTERM')
+        killGroup(proc, 'SIGTERM')
         return
       }
       this.onEvent(turn, ev, emit)
+      session.live = { activity: turn.tools.size ? 'working' : 'responding', partialText: [...turn.text.values()].join('') || turn.finalText || null, updatedAt: Date.now() }
     })
     proc.on('error', (e) => {
       if (st.turn !== turn) return
       st.turn = null
       this.log(`zcode could not run: ${e.message}`)
-      session.push({ type: 'turn_completed', turnId: turn.turnId, status: 'failed', finalText: '', error: `ZCode could not run: ${e.message}` })
+      session.push({ type: 'turn_completed', turnId: turn.turnId, status: 'failed', reason: 'crashed', plan: CODING_PLAN, finalText: '', error: `ZCode could not run: ${e.message}` })
     })
+    let exitTimer: NodeJS.Timeout | null = null
     proc.on('exit', (code, signal) => {
+      if (turn.interrupted || turn.wrongModel) killGroup(proc, 'SIGKILL')
+      exitTimer = setTimeout(() => {
+        proc.stdout?.destroy()
+        proc.stderr?.destroy()
+        finish(code, signal)
+      }, 1000)
+      exitTimer.unref()
+    })
+    proc.on('close', (code, signal) => finish(code, signal))
+    const finish = (code: number | null, signal: NodeJS.Signals | null) => {
+      if (exitTimer) clearTimeout(exitTimer)
+      for (const suffix of ['', '-wal', '-shm']) {
+        try { fs.chmodSync(this.config.sessionDb + suffix, 0o600) } catch {}
+      }
       if (st.turn !== turn) return // The error handler already reported this turn.
+      if (turn.interrupted || turn.wrongModel) killOwnedGroup(session.nativeRef?.process, this.log)
+      // Only groups with a process left are worth sweeping later.
+      st.processes = st.processes.filter((p) => { try { process.kill(-p.pgid, 0); return true } catch (e) { return (e as NodeJS.ErrnoException).code === 'EPERM' } })
       st.turn = null
-      const status = turn.wrongModel ? 'failed' : turn.interrupted ? 'interrupted' : code === 0 ? 'completed' : 'failed'
+      const status = turn.wrongModel ? 'failed' : turn.interrupted ? 'interrupted' : turn.failure || code !== 0 ? 'failed' : 'completed'
       if (status === 'failed') this.log(`zcode turn failed code=${code} signal=${signal}: ${turn.stderr.trim().slice(-500)}`)
       session.push({
         type: 'turn_completed',
         turnId: turn.turnId,
         status,
-        finalText: turn.finalText,
+        reason: turn.wrongModel ? 'wrong_model' : turn.interrupted ? 'interrupted' : turn.failure?.reason ?? (status === 'completed' ? 'end_turn' : 'crashed'),
+        providerErrorCode: turn.failure?.code,
+        plan: CODING_PLAN,
+        finalText: turn.finalText || [...turn.text.values()].join(''),
         error: turn.wrongModel
           ? `ZCode started ${turn.wrongModel} instead of ${st.model}; stopped it`
           : status === 'failed'
-            ? turn.stderr.trim().split('\n').slice(-3).join(' ') || `exit ${code}`
+            ? turn.failure?.error || turn.stderr.trim().split('\n').slice(-3).join(' ') || `exit ${code}`
             : undefined,
       })
-      const next = st.queue.shift()
-      if (next !== undefined) this.runTurn(session, next)
-    })
+    }
   }
 
   private onEvent(turn: Turn, ev: Json, emit: (b: AgentEventBody, ext?: Json) => void) {
@@ -334,6 +406,7 @@ export class ZCodeAdapter implements Provider {
         else if (p.kind === 'text_end' || p.kind === 'finish') {
           const text = (turn.text.get(id) ?? '').trim()
           turn.text.delete(id)
+          if (text) turn.finalText = text
           if (text) emit({ type: 'text', itemId: `${id}:${ev.seq}`, text })
         } else if (p.kind === 'reasoning_end') {
           const text = (turn.reasoning.get(id) ?? '').trim()
@@ -344,9 +417,9 @@ export class ZCodeAdapter implements Provider {
       }
       case 'tool.updated': {
         if (p.source === 'subagent') return
-        if (p.kind === 'scheduled') turn.tools.set(p.toolCallId, { name: p.toolName, input: p.input })
+        if (p.kind === 'scheduled') turn.tools.set(p.toolCallId, { name: p.toolName ?? 'tool', input: p.input })
         else if (p.kind === 'started') {
-          const t = turn.tools.get(p.toolCallId) ?? { name: p.toolName, input: {} }
+          const t = turn.tools.get(p.toolCallId) ?? { name: p.toolName ?? 'tool', input: {} }
           emit({ type: 'tool_started', itemId: p.toolCallId, name: t.name, input: t.input })
         } else if (p.kind === 'result' || p.kind === 'error') {
           const t = turn.tools.get(p.toolCallId) ?? { name: p.toolName ?? 'tool', input: {} }
@@ -364,13 +437,19 @@ export class ZCodeAdapter implements Provider {
         }
         return
       }
+      case 'turn.failed':
+        turn.failed = true
+        turn.failure = zcodeFailure(p.error ?? p)
+        return
       case 'session.updated':
+        if (p.type === 'model_request_failed' || p.statusType === 'model_request_failed' || p.kind === 'model_request_failed' || p.reason === 'model_request_failed' || p.queryStatus === 'model_request_failed' || p.model_request_failed) turn.failure = zcodeFailure(p.error ?? p.model_request_failed ?? p)
         // Report one request's context size; turn totals would trigger false context limits.
         if (p.usage && p.querySource === 'main_turn' && p.contextWindow != null) {
           emit({ type: 'usage', inputTokens: p.usage.inputTokens ?? 0, outputTokens: p.usage.outputTokens ?? 0, cachedInputTokens: p.usage.cacheReadTokens ?? 0 })
         }
         return
       case 'turn.completed':
+        if (!turn.failed) turn.failure = null
         turn.finalText = p.response ?? turn.finalText
         return
       case 'result':
@@ -378,6 +457,29 @@ export class ZCodeAdapter implements Provider {
         return
     }
   }
+}
+
+function killGroup(proc: ChildProcess, signal: NodeJS.Signals) {
+  if (!proc.pid) return false
+  try { process.kill(-proc.pid, signal); return true } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== 'ESRCH') return proc.kill(signal)
+    return false
+  }
+}
+
+export function classifyZCodeError(code: string | undefined): EndReason {
+  const n = Number(code)
+  // Matches ZCode's own table: 1113 is an account balance error, 1304 a rate limit.
+  if ([1005,1113,2056,20097].includes(n) || (n >= 1308 && n <= 1321) || /^(insufficient_quota|credit_balance_exhausted)$|_spend_limit_exceeded$/.test(code ?? '')) return 'quota_exhausted'
+  if ([3002,3008,3009,3010,429,1302,1303,1304,1305].includes(n)) return 'rate_limited'
+  if ([1006,3007,401,403].includes(n)) return 'auth'
+  return 'error'
+}
+
+function zcodeFailure(error: Json): Turn['failure'] {
+  const business = /^\d+$/.test(String(error.code)) || classifyZCodeError(error.code) !== 'error' ? error.code : null
+  const code = error.attribution?.providerErrorCode ?? error.providerErrorCode ?? error.providerCode ?? error.businessCode ?? business ?? error.statusCode ?? error.code
+  return { reason: classifyZCodeError(code == null ? undefined : String(code)), code: code == null ? undefined : String(code), error: String(error.message ?? error.reason ?? 'ZCode model request failed') }
 }
 
 function findModelId(value: Json, depth = 0): string | null {
@@ -429,10 +531,15 @@ function resolveZCodeDir(env: ProviderEnv): string | null {
   return null
 }
 
-// Clear the store on startup because only this provider's memory holds resumable sessions.
-function sessionDbFor(runDir: string): string {
-  const db = path.join(runDir, 'zcode-sessions.sqlite')
-  for (const suffix of ['', '-wal', '-shm', '-journal']) fs.rmSync(db + suffix, { force: true })
+export function sessionDbFor(dataDir = process.env.BITFROST_DATA_DIR || (process.platform === 'darwin' ? path.join(HOME, 'Library', 'Application Support', 'BitFrost') : path.join(process.env.XDG_DATA_HOME || path.join(HOME, '.local', 'share'), 'bitfrost'))): string {
+  fs.mkdirSync(dataDir, { recursive: true, mode: 0o700 })
+  fs.chmodSync(dataDir, 0o700)
+  const db = path.join(dataDir, 'zcode-sessions.sqlite')
+  // Create it private, since ZCode's SQLite gives its -wal and -shm files the same mode.
+  try { fs.closeSync(fs.openSync(db, 'a', 0o600)) } catch {}
+  for (const suffix of ['', '-wal', '-shm']) {
+    try { fs.chmodSync(db + suffix, 0o600) } catch {}
+  }
   return db
 }
 
@@ -448,7 +555,7 @@ export const zcodeProvider: ProviderFactory = {
         cli: path.join(dir, 'resources', 'glm', 'zcode.cjs'),
         builtinProviderConfig: path.join(dir, 'resources', 'config', 'provider', 'zcode-builtin.json'),
         runDir: env.runDir,
-        sessionDb: sessionDbFor(env.runDir),
+        sessionDb: sessionDbFor(env.dataDir),
         socket: env.socket,
         bridgeInstalled,
         recorder: env.recorder,

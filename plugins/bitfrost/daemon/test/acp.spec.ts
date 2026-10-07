@@ -37,7 +37,7 @@ function fake(fixture: string, spec: Partial<AcpAgentSpec> = {}, opts: Partial<A
   const log = path.join(dir, 'sent.jsonl')
   const provider = new AcpProvider(
     { id: 'fake', displayName: 'Fake', vendor: null, binary: 'fake', args: [], loginCommand: 'fake login', optIn: true, gates: 'all', note: '', ...spec },
-    { bin: process.execPath, args: [FAKE, path.join(HERE, 'fixtures', 'acp', fixture)], env: { BITFROST_ACP_LOG: log, BITFROST_ACP_MARK: path.join(dir, 'crashed') } },
+    { bin: process.execPath, args: [FAKE, path.isAbsolute(fixture) ? fixture : path.join(HERE, 'fixtures', 'acp', fixture)], env: { BITFROST_ACP_LOG: log, BITFROST_ACP_MARK: path.join(dir, 'crashed') } },
     { log: () => {}, ...opts },
   )
   const sent = () => (fs.existsSync(log) ? fs.readFileSync(log, 'utf8').trim().split('\n').map((l) => JSON.parse(l)) : [])
@@ -54,7 +54,7 @@ async function spawn(run: Run, model: string, effort?: string): Promise<Session>
   return session
 }
 
-const types = (s: Session) => s.events.map((e) => e.type)
+const types = (s: Session) => s.events.filter((e) => !['user_input','input_consumed'].includes(e.type)).map((e) => e.type)
 const find = (s: Session, type: string): any => s.events.find((e) => e.type === type)
 const done = (s: Session, n = 1) => until(`${n} finished turn(s)`, () => s.events.filter((e) => e.type === 'turn_completed').length >= n)
 const answerTo = (sent: any[], id: unknown) => sent.find((m) => m.id === id && m.method === undefined)
@@ -231,7 +231,7 @@ test('a turn becomes text, a thought, tools, a command with permission, file cha
       'text',
       'turn_completed',
     ])
-    const ev = session.events as any[]
+    const ev = session.events.filter((e) => !['user_input','input_consumed'].includes(e.type)) as any[]
     assert.strictEqual(ev[1].text, 'Let me look.')
     assert.strictEqual(ev[2].text, "I'll list the files.")
     assert.deepStrictEqual([ev[3].name, ev[3].input], ['Read', { file_path: '/w/hello.txt' }])
@@ -417,6 +417,9 @@ test('a question handed to the lead agent declines the form and stops the turn',
     await until('the cancel', () => run.sent().some((m) => m.method === 'session/cancel'))
     assert.deepStrictEqual(run.sent().find((m) => m.result?.action).result, { action: 'decline' })
     assert.strictEqual(find(session, 'question_answered').how, 'deferred')
+    await until('the stopped turn', () => !!find(session, 'turn_completed'))
+    assert.equal(find(session, 'turn_completed').reason, 'interrupted')
+    assert.deepEqual(run.provider.pendingApprovals(session), [])
   } finally {
     run.stop()
   }
@@ -427,11 +430,10 @@ test('the app crashing fails the running task, and the next task starts it again
   try {
     const first = await spawn(run, 'fake/model-a')
     await until('the failure', () => !!find(first, 'session_failed'))
-    assert.deepStrictEqual(types(first), ['turn_started', 'session_failed'])
+    assert.deepStrictEqual(types(first), ['turn_started', 'turn_completed', 'session_failed'])
     assert.match(find(first, 'session_failed').error, /^Fake exited \(code 1/)
-    assert.strictEqual(first.info.state, 'failed')
-    await run.provider.sendInput(first, 'Hello?')
-    assert.match((first.events.at(-1) as any).error, /restarted since this task began/)
+    assert.strictEqual(first.info.state, 'detached')
+    await assert.rejects(run.provider.sendInput(first, 'Hello?'), /restarted since this task began/)
     const second = await spawn(run, 'fake/model-a')
     await done(second)
     assert.strictEqual(find(second, 'turn_completed').finalText, 'Starting.Still here.')
@@ -507,4 +509,239 @@ test('claudeTool maps the apps\' spellings to Claude Code tools', () => {
   assert.deepStrictEqual(claudeTool('fetch', 'google_web_search', { query: 'acp' }), { name: 'WebSearch', input: { query: 'acp' } })
   assert.strictEqual(claudeTool('other', 'todowrite', { todos: [] }), null)
   assert.strictEqual(claudeTool('execute', 'bash', { cwd: '/w' }), null)
+})
+
+
+test('a denial followed by end_turn keeps the successful end reason', async () => {
+  const run = fake('opencode-reject.json')
+  try {
+    const s = await spawn(run,'opencode-go/deepseek-v4-flash')
+    await until('approval',() => !!find(s,'approval_requested'))
+    run.provider.resolveApproval(s,find(s,'approval_requested').approvalId,'deny','Do not run that command.')
+    await done(s)
+    assert.equal(find(s,'turn_completed').reason,'end_turn')
+    assert.equal(find(s,'turn_completed').error,undefined)
+  } finally { run.stop() }
+})
+
+function scenarioFile(t: any, changes: any) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(),'bitfrost-acp-phase1-'))
+  const scenario = JSON.parse(fs.readFileSync(path.join(HERE,'fixtures','acp','gemini-models.json'),'utf8'))
+  Object.assign(scenario,changes)
+  const file = path.join(dir,'scenario.json')
+  fs.writeFileSync(file,JSON.stringify(scenario))
+  t.after(() => fs.rmSync(dir,{ recursive:true,force:true }))
+  return file
+}
+
+test('ACP stop reasons map to end reasons on every turn', async (t) => {
+  const reasons = { end_turn:'end_turn',max_tokens:'max_tokens',max_turn_requests:'max_requests',refusal:'refusal',cancelled:'interrupted' }
+  const file = scenarioFile(t,{ turns:Object.keys(reasons).map((stopReason) => [{ respond:{ stopReason } }]) })
+  const run = fake(file)
+  try {
+    const s = await spawn(run,'auto-gemini-3')
+    await done(s)
+    let n = 1
+    for (const _ of Object.keys(reasons).slice(1)) { assert.equal(await run.provider.sendInput(s,'again'),'started'); await done(s,++n) }
+    const turns: any[] = s.events.filter((e) => e.type === 'turn_completed')
+    assert.deepEqual(turns.map((e) => e.reason),Object.values(reasons))
+  } finally { run.stop() }
+})
+
+test('ACP reopens via session/load only when loadSession was advertised', async (t) => {
+  const file = scenarioFile(t,{ initialize:{ protocolVersion:1,agentCapabilities:{ loadSession:true } },turns:[[{ update:{ sessionUpdate:'agent_message_chunk',content:{ type:'text',text:'Resumed.' } } }]] })
+  const run = fake(file)
+  const s = new Session({ id:'saved',harness:'fake',agent:'test',model:'auto-gemini-3',cwd:run.dir,state:'detached' })
+  s.nativeRef = { acpSessionId:'ses_old',canAsk:true }
+  try {
+    const receipt = await s.deliver(run.provider,'continue')
+    assert.equal(receipt.delivery,'started')
+    await done(s)
+    assert.deepEqual(run.sent().find((m) => m.method === 'session/load').params,{ sessionId:'ses_old',cwd:run.dir,mcpServers:[] })
+    assert.equal(run.sent().find((m) => m.method === 'session/prompt').params.sessionId,'ses_old')
+    assert.equal(find(s,'turn_completed').finalText,'Resumed.')
+  } finally { run.stop() }
+  const unsupported = fake('turn.json')
+  try { await assert.rejects(unsupported.provider.attach(s,s.nativeRef),/can't reopen.*loadSession/) }
+  finally { unsupported.stop() }
+})
+
+test('the fake steering wheel cancels ACP and continues in the same app session', async () => {
+  const run = fake('cancel.json')
+  try {
+    const s = await spawn(run,'fake/model-a')
+    await until('approval',() => !!find(s,'approval_requested'))
+    const receipt = await s.deliver(run.provider,'keep working','interrupt')
+    assert.equal(receipt.delivery,'restarted')
+    await done(s,2)
+    const turns: any[] = s.events.filter((e) => e.type === 'turn_completed')
+    assert.deepEqual([turns[0].reason,turns[0].status,turns[0].continues],['restarted','interrupted',true])
+    const prompts = run.sent().filter((m) => m.method === 'session/prompt')
+    assert.equal(prompts[0].params.sessionId,prompts[1].params.sessionId)
+    assert.match(prompts[1].params.prompt[0].text,/lead interrupted.*\nkeep working/)
+  } finally { run.stop() }
+})
+
+
+test('an ACP app ignoring cancel is force stopped with an interrupted end reason', async (t) => {
+  const scenario = JSON.parse(fs.readFileSync(path.join(HERE,'fixtures','acp','cancel.json'),'utf8'))
+  scenario.ignoreCancel = true
+  const file = scenarioFile(t,scenario)
+  const run = fake(file)
+  try {
+    const s = await spawn(run,'fake/model-a')
+    await until('approval',() => !!find(s,'approval_requested'))
+    assert.equal(await s.stop(run.provider,'host',{ graceMs:20,killMs:1000 }),'forced')
+    assert.equal(find(s,'turn_completed').reason,'interrupted')
+    assert.equal(s.activeTurnId,null)
+    assert.equal(s.info.state,'detached')
+  } finally { run.stop() }
+})
+
+test('a denial followed by refusal reports permission_denied and preserves the denial reason', async (t) => {
+  const scenario = JSON.parse(fs.readFileSync(path.join(HERE, 'fixtures', 'acp', 'opencode-reject.json'), 'utf8'))
+  const change = (value: any) => {
+    if (!value || typeof value !== 'object') return
+    if (value.stopReason === 'end_turn') value.stopReason = 'refusal'
+    for (const child of Object.values(value)) change(child)
+  }
+  change(scenario)
+  const run = fake(scenarioFile(t, scenario))
+  try {
+    const s = await spawn(run, 'opencode-go/deepseek-v4-flash')
+    await until('approval', () => !!find(s, 'approval_requested'))
+    run.provider.resolveApproval(s, find(s, 'approval_requested').approvalId, 'deny', 'Do not run it.')
+    await done(s)
+    assert.equal(find(s, 'turn_completed').reason, 'permission_denied')
+    assert.equal(find(s, 'turn_completed').error, 'Do not run it.')
+  } finally { run.stop() }
+})
+
+test('the fake steering wheel survives a forced ACP kill and loads the same native session', async (t) => {
+  const file = scenarioFile(t, { initialize: { protocolVersion: 1, agentCapabilities: { loadSession: true } }, ignoreCancel: true,
+    turns: [[{ waitCancel: true }]], afterRestart: [[{ update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Continued.' } } }]] })
+  const run = fake(file)
+  try {
+    const s = await spawn(run, 'auto-gemini-3')
+    await until('first prompt', () => run.sent().some((m) => m.method === 'session/prompt'))
+    const kill = run.provider.kill.bind(run.provider)
+    run.provider.kill = (session) => { fs.writeFileSync(path.join(run.dir, 'crashed'), 'forced'); return kill(session) }
+    const stop = s.stop.bind(s)
+    s.stop = (provider, source, options) => stop(provider, source, { ...options, graceMs: 20, killMs: 1000 })
+    const receipt = await s.deliver(run.provider, 'Use the correction.', 'interrupt')
+    await done(s, 2)
+    const ends: any[] = s.events.filter((e) => e.type === 'turn_completed')
+    assert.deepEqual([ends[0].reason, ends[0].status, ends[0].continues], ['restarted', 'interrupted', true])
+    assert.equal(ends[1].finalText, 'Continued.')
+    assert.equal(run.sent().filter((m) => m.method === 'session/load').length, 1)
+    const prompts = run.sent().filter((m) => m.method === 'session/prompt')
+    assert.equal(prompts[0].params.sessionId, prompts[1].params.sessionId)
+    assert.match(prompts[1].params.prompt[0].text, /lead interrupted.*\nUse the correction\./)
+    const fates: any[] = s.events.filter((e) => (e.type === 'input_consumed' || e.type === 'input_dropped') && e.inputId === receipt.inputId)
+    assert.equal(fates.length, 1)
+    assert.equal(fates[0].type, 'input_consumed')
+    assert.ok(fates[0].seq < ends[1].seq)
+  } finally { run.stop() }
+})
+
+test('ACP app exit detaches idle sessions so the next delivery loads them again', async (t) => {
+  const file = scenarioFile(t, { initialize: { protocolVersion: 1, agentCapabilities: { loadSession: true } }, uniqueSessions: true, turns: [[], []] })
+  const run = fake(file)
+  try {
+    const first = await spawn(run, 'auto-gemini-3')
+    await done(first)
+    const second = await spawn(run, 'auto-gemini-3')
+    await done(second)
+    run.stop()
+    await until('both detached', () => first.info.state === 'detached' && second.info.state === 'detached')
+    const receipt = await first.deliver(run.provider, 'continue')
+    assert.equal(receipt.delivery, 'started')
+    await done(first, 2)
+    assert.equal(run.sent().filter((m) => m.method === 'session/load').length, 1)
+    assert.equal(second.info.state, 'detached')
+  } finally { run.stop() }
+})
+
+test('ACP forced stop preserves another session in session/new or session/load', async (t) => {
+  for (const loading of [false, true]) {
+    const file = scenarioFile(t, { initialize: { protocolVersion: 1, agentCapabilities: { loadSession: true } }, uniqueSessions: true,
+      ignoreCancel: true, newDelay: loading ? 0 : 100, loadDelay: 100, turns: [[{ waitCancel: true }], []] })
+    const run = fake(file)
+    try {
+      const first = await spawn(run, 'auto-gemini-3')
+      await until('first prompt', () => run.sent().some((m) => m.method === 'session/prompt'))
+      const second = newSession(run.dir, 'auto-gemini-3')
+      second.info.id = 'loading'
+      second.info.state = 'detached'
+      second.nativeRef = { acpSessionId: 'saved', canAsk: true }
+      const pending = loading ? second.attach(run.provider) : run.provider.spawnSession(second, { model: 'auto-gemini-3', cwd: run.dir, prompt: 'second' })
+      await until('opening another session', () => run.sent().filter((m) => m.method === (loading ? 'session/load' : 'session/new')).length === (loading ? 1 : 2))
+      assert.equal(run.provider.kill(first), false)
+      assert.equal(await first.stop(run.provider, 'host', { graceMs: 5, killMs: 5 }), 'timed_out')
+      await pending
+      if (loading) await second.deliver(run.provider, 'second')
+      await done(second)
+      assert.equal(find(second, 'turn_completed').reason, 'end_turn')
+    } finally { run.stop() }
+  }
+})
+
+test('ACP kill refuses to stop another running turn and deferred questions preserve queued lead input', async (t) => {
+  const file = scenarioFile(t, { uniqueSessions: true, turns: [[{ waitCancel: true }], [{ waitCancel: true }]] })
+  const run = fake(file)
+  try {
+    const first = await spawn(run, 'auto-gemini-3'), second = await spawn(run, 'auto-gemini-3')
+    assert.equal(run.provider.kill(first), false)
+    assert.equal(second.info.state, 'running')
+  } finally { run.stop() }
+  const question = fake('question.json')
+  try {
+    const s = await spawn(question, 'fake/model-a')
+    await until('question', () => !!find(s, 'question_asked'))
+    const receipt = await s.deliver(question.provider, 'The lead answer.')
+    const began = Date.now()
+    assert.equal(await question.provider.answerQuestion(s, find(s, 'question_asked').questionId, null, true), true)
+    assert.ok(Date.now() - began < 100)
+    await done(s, 2)
+    assert.equal(s.events.filter((e) => e.type === 'input_consumed' && e.inputId === receipt.inputId).length, 1)
+    assert.equal(s.events.filter((e) => e.type === 'input_dropped' && e.inputId === receipt.inputId).length, 0)
+  } finally { question.stop() }
+})
+
+test('ACP deferred questions never wait on a hung stop confirmation', async () => {
+  const run = fake('question.json')
+  try {
+    const s = await spawn(run, 'fake/model-a')
+    await until('question', () => !!find(s, 'question_asked'))
+    let options: any
+    s.stop = (_provider, _source, value) => { options = value; return new Promise(() => {}) }
+    const answer = await Promise.race([run.provider.answerQuestion(s, find(s, 'question_asked').questionId, null, true), sleep(100).then(() => 'blocked')])
+    assert.equal(answer, true)
+    assert.equal(options.preserveQueue, true)
+  } finally { run.stop() }
+})
+
+test('stop_timeout cancels the target load RPC and leaves another running session intact', async (t) => {
+  const file = scenarioFile(t, { initialize: { protocolVersion: 1, agentCapabilities: { loadSession: true } }, ignoreLoad: true, uniqueSessions: true, turns: [[{ waitCancel: true }]] })
+  const run = fake(file)
+  try {
+    const first = await spawn(run, 'auto-gemini-3')
+    const target = new Session({ id: 'saved', harness: 'fake', agent: 'test', model: 'auto-gemini-3', cwd: run.dir, state: 'detached' })
+    target.nativeRef = { acpSessionId: 'saved-native', canAsk: true }
+    const delivery = target.deliver(run.provider, 'load is stuck')
+    const failed = assert.rejects(delivery, /session stopped/)
+    await until('load request', () => run.sent().some((m) => m.method === 'session/load'))
+    const stop = target.stop(run.provider, 'host', { graceMs: 10, killMs: 10 })
+    const queued = await target.deliver(run.provider, 'while stopping')
+    assert.equal(await stop, 'timed_out')
+    await failed
+    assert.equal(first.info.state, 'running')
+    assert.equal(target.events.filter((e) => e.type === 'input_dropped' && e.inputId === queued.inputId).length, 1)
+    const second = target.deliver(run.provider, 'another load')
+    const secondFailure = assert.rejects(second, /session stopped/)
+    await until('new load request', () => run.sent().filter((m) => m.method === 'session/load').length === 2)
+    await target.stop(run.provider, 'host', { graceMs: 10, killMs: 10 })
+    await secondFailure
+    assert.equal(first.info.state, 'running')
+  } finally { run.stop() }
 })
