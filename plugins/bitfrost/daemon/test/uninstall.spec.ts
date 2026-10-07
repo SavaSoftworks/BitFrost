@@ -92,7 +92,7 @@ test('yes to both removes the config too', async () => {
 test('the plan lists what goes in each group, before anything changes', async () => {
   const { planOf } = await import('../uninstall.ts')
   const plan = planOf()
-  assert.deepStrictEqual(plan.program.map((i) => i.label), ['Claude Code plugin', 'Claude Code plugin', 'GLM bridge in ZCode', 'App files', 'Command', 'Model list cache', 'Helper runtime files'])
+  assert.deepStrictEqual(plan.program.map((i) => i.label), ['Claude Code plugin', 'Claude Code plugin', 'GLM bridge in ZCode', 'App files', 'Subagent history', 'Command', 'Model list cache', 'Helper runtime files'])
   assert.deepStrictEqual(plan.program.filter((i) => i.label === 'Claude Code plugin').map((i) => i.path), ['bitfrost@bitfrost from ~/.claude', 'bitfrost@bitfrost from ~/.claude-work'])
   assert.deepStrictEqual(plan.config.map((i) => i.path), [config])
   // ZCode's config file stays; only BitFrost's entry leaves it.
