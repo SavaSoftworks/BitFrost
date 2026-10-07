@@ -1,0 +1,32 @@
+# Copyright (C) 2026 Nick Germaine
+# SPDX-License-Identifier: GPL-3.0-only
+#
+# BitFrost is free software: you can share and change it under the GNU General
+# Public License, version 3 only. It comes with no warranty. See LICENSE.
+
+# Runs the unit tests on every pull request, whatever branch it targets.
+name: tests
+
+on:
+  pull_request:
+
+# A new push to the same PR cancels its older run.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Install Claude Code (for the plugin test kit)
+        run: npm install -g @anthropic-ai/claude-code
+      - run: npm run test:daemon
+      - run: npm run test:plugin
