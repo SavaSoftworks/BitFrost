@@ -56,7 +56,7 @@ curl -fsSL https://github.com/SavaSoftworks/BitFrost/releases/download/v0.8.1/in
 
 ### Uninstalling
 
-Run `bitfrost uninstall`. It stops the helper and removes the Claude plugin, the GLM bridge in ZCode, your BitFrost config and every file BitFrost added. It asks first; add `--yes` to skip that, for example in a script. If a subagent is still running, it changes nothing and asks you to wait.
+Run `bitfrost uninstall`. It lists what it will remove and asks two questions: remove BitFrost (the Claude plugin, the GLM bridge in ZCode and every file BitFrost added), then also remove your BitFrost config. Add `--yes` to skip the questions and remove both, for example in a script, or `--yes --keep-config` to keep your config. If a subagent is still running, it changes nothing and asks you to wait.
 
 ## Troubleshooting
 

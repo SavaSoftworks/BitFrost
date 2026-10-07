@@ -89,6 +89,6 @@ export type ProviderFactory = {
   optIn?: boolean
   create(env: ProviderEnv): Provider | null
   setup?(env: ProviderEnv): void
-  // Undoes setup, for bitfrost uninstall.
-  uninstall?(): void
+  // Undoes setup, for bitfrost uninstall, and says what it changed. dryRun only says.
+  uninstall?(dryRun?: boolean): { label: string; path: string }[]
 }

@@ -544,6 +544,7 @@ usage: bitfrost <command>
   restart                   restart the helper, once no subagent is running
   update                    install the latest release, if it's newer
   uninstall [--yes]         remove BitFrost from Claude Code, ZCode and this machine
+    [--keep-config]         with --yes, keep your config
   setup <app>               one-time setup for an app (${PROVIDERS.filter((p) => p.setup).map((p) => p.id).join(', ')})
   selftest <app> [model]    check that an app works with BitFrost
   selftest --all            check every app
@@ -564,7 +565,10 @@ else if (mode === 'socket') console.log(SOCKET)
 else if (mode === 'status') await printStatus()
 else if (mode === 'restart') await restart()
 else if (mode === 'update') process.exit(await update())
-else if (mode === 'uninstall') process.exit(await uninstall(stop, ['--yes', '-y'].includes(process.argv[3] ?? '')))
+else if (mode === 'uninstall') {
+  const flags = process.argv.slice(3)
+  process.exit(await uninstall({ stop, running: async () => !!(await health()) }, { yes: flags.includes('--yes') || flags.includes('-y'), keepConfig: flags.includes('--keep-config') }))
+}
 else if (mode === 'selftest' && process.argv[3] === '--all') await selftestAll()
 else if (mode === 'selftest') await selftest(process.argv[3], process.argv[4])
 else {
