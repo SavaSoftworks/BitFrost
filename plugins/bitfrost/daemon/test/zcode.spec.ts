@@ -106,6 +106,144 @@ function fake(t: any, scenario: any) {
 
 const native = { type:'session.updated',sessionId:'native-zcode',payload:{} }
 
+test('ZCode disables subagents, workflows, and scheduled runs with one CLI argument on initial and resumed turns', async (t) => {
+  const run = fake(t, { first: [native], wait: true, resumed: [{ type: 'turn.completed', payload: { response: 'Done.' } }] })
+  await run.adapter.spawnSession(run.session, { model: 'GLM-test', cwd: run.dir, prompt: 'hello', canAskUser: true })
+  await until('native session', () => !!run.session.nativeRef?.zcodeSessionId)
+  await run.session.deliver(run.adapter, 'continue', 'interrupt')
+  await until('both turns', () => run.session.events.filter((e) => e.type === 'turn_completed').length === 2)
+  for (const { args } of run.sent()) {
+    const i = args.indexOf('--disallowed-tools')
+    assert.ok(i >= 0)
+    assert.equal(args[i + 1], 'Agent,CreateWorkflow,AmendWorkflow,CronCreate,OffPeakCreate')
+    assert.equal(args[i + 2], '--output-format')
+    assert.equal(args[args.indexOf('--cwd') + 1], run.dir)
+    assert.equal(args[args.indexOf('--mode') + 1], 'edit')
+  }
+  assert.equal(run.sent().length, 2)
+})
+
+test('ZCode bridge denies subagents, workflows, and scheduled runs before harmless scopes, grants, or approvals', async (t) => {
+  for (const canAskUser of [true, false]) {
+    await t.test(canAskUser ? 'edit' : 'yolo', async (t) => {
+      const run = fake(t, { first: [native], wait: true })
+      await run.adapter.spawnSession(run.session, { model: 'GLM-test', cwd: run.dir, prompt: 'hello', canAskUser })
+      await until('native session', () => !!run.session.nativeRef?.zcodeSessionId)
+      const state = (run.adapter as any).states.get(run.session.info.id)
+      for (const tool of ['Agent', 'CreateWorkflow', 'AmendWorkflow', 'CronCreate', 'OffPeakCreate']) {
+        state.grants.add(`${tool}:{}`)
+        for (const scope of ['none', 'workspace', undefined]) {
+          const reply = await Promise.race([
+            run.adapter.bridge(state.token, { tool_name: tool, tool_input: {}, sideEffectScope: scope }),
+            sleep(200).then(() => null),
+          ])
+          assert.equal(reply?.hookSpecificOutput.permissionDecision, 'deny')
+          assert.match(reply.hookSpecificOutput.permissionDecisionReason, /BitFrost subagents.*disabled/)
+          assert.ok(reply.hookSpecificOutput.permissionDecisionReason.includes(tool))
+        }
+      }
+      assert.deepEqual(run.adapter.pendingApprovals(run.session), [])
+      assert.equal(run.session.events.some((e) => e.type === 'approval_requested'), false)
+      const args = run.sent()[0].args
+      assert.equal(args[args.indexOf('--disallowed-tools') + 1], 'Agent,CreateWorkflow,AmendWorkflow,CronCreate,OffPeakCreate')
+    })
+  }
+})
+
+const builtInInput = { url: 'https://www.unix.com/man-page/osx/1/diff/', retain_images: false }
+const builtInSummary = '**webReader_result_summary:** [{"text":{"title":"diff(1)  [osx man page]","url":"https://www.unix.com/man-page/osx/1/diff/"}}]'
+const builtInPrelude = 'The macOS man page confirms the behavior since the libdiff import is recent.'
+const builtInAnswer = '## Review: uncommitted changes\n\nNo issues found.'
+const builtInBlock = '**🌐 Z.ai Built-in Tool: webReader**\n\n**Input:**\n```json\n' + JSON.stringify(builtInInput) + '\n```\n*Executing on server...*\n**Output:**\n' + builtInSummary
+const builtInResponse = builtInPrelude + builtInBlock + '\n                                                ' + builtInAnswer
+
+test('ZCode splits streamed built-in tools and keeps only the final answer through completion snapshots', async (t) => {
+  for (const kind of ['text_end', 'finish']) {
+    await t.test(kind, async (t) => {
+      const run = fake(t, { first: [native,
+        { type: 'model.streaming', payload: { kind: 'text_delta', assistantMessageId: 'a', delta: builtInResponse.slice(0, 120) } },
+        { type: 'model.streaming', payload: { kind: 'text_delta', assistantMessageId: 'a', delta: builtInResponse.slice(120) } },
+        { type: 'model.streaming', seq: 3, payload: { kind, assistantMessageId: 'a' } },
+        { type: 'model.streaming', seq: 4, payload: { kind: 'finish', assistantMessageId: 'a' } },
+        { type: 'turn.completed', payload: { response: builtInResponse } },
+        { type: 'result', response: builtInResponse },
+      ] })
+      await run.adapter.spawnSession(run.session, { model: 'GLM-test', cwd: run.dir, prompt: 'hello' })
+      await until('completion', () => run.session.events.some((e) => e.type === 'turn_completed'))
+      const events: any[] = run.session.events.filter((e) => !['user_input', 'input_consumed'].includes(e.type))
+      assert.deepEqual(events.map((e) => e.type), ['turn_started', 'text', 'tool_started', 'tool_completed', 'text', 'turn_completed'])
+      assert.deepEqual(events.filter((e) => e.type === 'text').map((e) => e.text), [builtInPrelude, builtInAnswer])
+      const started = events.find((e) => e.type === 'tool_started')
+      const completed = events.find((e) => e.type === 'tool_completed')
+      assert.equal(started.name, 'webReader')
+      assert.deepEqual(started.input, builtInInput)
+      assert.equal(completed.itemId, started.itemId)
+      assert.equal(completed.name, 'webReader')
+      assert.deepEqual(completed.input, builtInInput)
+      assert.equal(completed.output, builtInSummary)
+      assert.equal(completed.ok, true)
+      assert.equal(events.at(-1).finalText, builtInAnswer)
+    })
+  }
+})
+
+test('ZCode splits built-in tools supplied only by turn.completed or result', async (t) => {
+  for (const type of ['turn.completed', 'result']) {
+    await t.test(type, async (t) => {
+      const event = type === 'result' ? { type, response: builtInResponse } : { type, payload: { response: builtInResponse } }
+      const run = fake(t, { first: [native, event] })
+      await run.adapter.spawnSession(run.session, { model: 'GLM-test', cwd: run.dir, prompt: 'hello' })
+      await until('completion', () => run.session.events.some((e) => e.type === 'turn_completed'))
+      assert.equal((run.session.events.at(-1) as any).finalText, builtInAnswer)
+      assert.deepEqual(run.session.events.filter((e) => e.type === 'text').map((e) => e.text), [builtInPrelude, builtInAnswer])
+      const tools: any[] = run.session.events.filter((e) => e.type === 'tool_started' || e.type === 'tool_completed')
+      assert.deepEqual(tools.map((e) => e.name), ['webReader', 'webReader'])
+      assert.equal(tools[1].output, builtInSummary)
+    })
+  }
+})
+
+test('ZCode accepts optional built-in formatting, missing output, and invalid JSON across multiple blocks', async (t) => {
+  const first = builtInBlock.replace('🌐 ', '').replace('```json', '```').replace('**Output:**\n', '')
+  const second = '**Z.ai Built-in Tool: webSearch**\n**Input:**\n```\n{invalid json}\n```'
+  const response = 'Before.' + first + '\n   Between.\n' + second + '\n   Final answer.\n'
+  const run = fake(t, { first: [native, { type: 'result', response }] })
+  await run.adapter.spawnSession(run.session, { model: 'GLM-test', cwd: run.dir, prompt: 'hello' })
+  await until('completion', () => run.session.events.some((e) => e.type === 'turn_completed'))
+  assert.equal((run.session.events.at(-1) as any).finalText, 'Final answer.')
+  assert.deepEqual(run.session.events.filter((e) => e.type === 'text').map((e) => e.text), ['Before.', 'Between.', 'Final answer.'])
+  const tools: any[] = run.session.events.filter((e) => e.type === 'tool_completed')
+  assert.deepEqual(tools.map((e) => [e.name, e.input, e.output]), [
+    ['webReader', builtInInput, builtInSummary],
+    ['webSearch', '{invalid json}', ''],
+  ])
+})
+
+test('ZCode leaves ordinary text and incomplete built-in-looking blocks unchanged', async (t) => {
+  const cases = [
+    ['plain text', '  Plain answer.\n'],
+    ['missing input', '**🌐 Z.ai Built-in Tool: webReader**\nMissing input.'],
+    ['unrecognized fence language', builtInBlock.replace('```json', '```text') + '\nAnswer.'],
+    ['unclosed fence', '**Z.ai Built-in Tool: webReader**\n**Input:**\n```json\n{}\nAnswer.'],
+    ['invalid closing fence', builtInBlock.replace('\n```\n', '\n```not a closing fence\n') + '\nAnswer.'],
+  ]
+  for (const [name, response] of cases) {
+    await t.test(name, async (t) => {
+      const run = fake(t, { first: [native,
+        { type: 'model.streaming', payload: { kind: 'text_delta', assistantMessageId: 'a', delta: response } },
+        { type: 'model.streaming', seq: 2, payload: { kind: 'text_end', assistantMessageId: 'a' } },
+        { type: 'turn.completed', payload: { response } },
+        { type: 'result', response },
+      ] })
+      await run.adapter.spawnSession(run.session, { model: 'GLM-test', cwd: run.dir, prompt: 'hello' })
+      await until('completion', () => run.session.events.some((e) => e.type === 'turn_completed'))
+      assert.equal((run.session.events.at(-1) as any).finalText, response)
+      assert.deepEqual(run.session.events.filter((e) => e.type === 'text').map((e) => e.text), [response.trim()])
+      assert.equal(run.session.events.some((e) => e.type === 'tool_started' || e.type === 'tool_completed'), false)
+    })
+  }
+})
+
 test('turn.failed uses the structured provider error instead of stderr, including 1005 vs 3002 vs 1006', async (t) => {
   const { classifyZCodeError } = await import('../providers/zcode.ts')
   const cases = [['1005','quota_exhausted'],['3002','rate_limited'],['1006','auth'],['1113','quota_exhausted'],['1321','quota_exhausted'],['2056','quota_exhausted'],['20097','quota_exhausted'],['insufficient_quota','quota_exhausted'],['credit_balance_exhausted','quota_exhausted'],['daily_spend_limit_exceeded','quota_exhausted'],['429','rate_limited'],['1305','rate_limited'],['3007','auth'],['403','auth'],['other','error']]

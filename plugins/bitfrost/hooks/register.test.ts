@@ -10,6 +10,7 @@ import { test, expect, mock } from 'claude-code/testing'
 
 const SOCK = '/tmp/bitfrost-test-1000/bitfrost/bitfrostd.sock'
 const NAME_TABLE = 'bitfrost models: sol6 = bitfrost:gpt-6-sol (Codex)'
+const NEW_SETTINGS_NOTICE = 'BitFrost has new settings, off until you choose them. To choose them, run bitfrost setup in a terminal.'
 const SOL = {
   name: 'gpt-6-sol',
   description: 'GPT-6 Sol for long tasks',
@@ -29,8 +30,14 @@ type Scripted = { events: any[]; items: Record<string, any>; approvals: any[]; s
 // A fake bitfrostd: each POST /sessions takes the next scripted session the test queued.
 const world = (on: any, opts: { store?: Record<string, unknown> } = {}) => {
   const fake = {
-    health: { version: '0.7.1', busy: false, configError: null as string | null },
+    health: {
+      version: '0.7.1', busy: false, configError: null as string | null,
+      handback: null as { model: string; effort?: string | null } | null,
+      newSettings: [] as string[],
+    },
+    healthFailure: null as 'http' | 'transport' | null,
     leaseReply: null as { status: number; body: any } | null, // null: a healthy lease
+    renewalReply: null as { status: number; body: any } | null,
     agentsReply: { agents: [SOL], nameTable: NAME_TABLE, at: 1 } as { agents: any[]; nameTable: string; at: number; hint?: string },
     reviewReply: { isAnswered: true, text: 'ALLOW\nroutine work for the task.', usage: { input_tokens: 0, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } },
     queue: [] as Scripted[],
@@ -45,6 +52,7 @@ const world = (on: any, opts: { store?: Record<string, unknown> } = {}) => {
     holdItems: false, // item waits answer only when the clock moves
     holdEvents: false, // an empty event wait answers only when the clock moves
     sendMessageDelays: [] as number[], // the engine's SendMessage, slow after its send
+    modelStep: null as ((e: any) => AsyncGenerator<any, any, any>) | null,
   }
   const sessions = new Map<string, Scripted>()
   const w = {
@@ -112,11 +120,20 @@ const world = (on: any, opts: { store?: Record<string, unknown> } = {}) => {
     if (method === 'POST') (w.posts[path] ??= []).push(body)
     let status = 200
     let reply: any = {}
-    if (path === '/health') reply = fake.health
+    if (path === '/health') {
+      if (fake.healthFailure === 'transport') throw new Error('socket hang up')
+      if (fake.healthFailure === 'http') {
+        status = 503
+        reply = { error: 'health unavailable' }
+      } else reply = fake.health
+    }
     else if (path === '/leases') {
       if (fake.leaseReply) ({ status, body: reply } = fake.leaseReply)
       else w.leaseId = reply.leaseId = `lease-${++leaseN}`
-    } else if (path.startsWith('/leases/') && method === 'POST') reply = { ok: true, agentsAt: fake.agentsReply.at }
+    } else if (path.startsWith('/leases/') && method === 'POST') {
+      if (fake.renewalReply) ({ status, body: reply } = fake.renewalReply)
+      else reply = { ok: true, agentsAt: fake.agentsReply.at }
+    }
     else if (path === '/agents') reply = fake.agentsReply
     else if (path === '/sessions') {
       const scripted = fake.queue.shift() ?? { events: [], items: {}, approvals: [] }
@@ -214,6 +231,7 @@ const world = (on: any, opts: { store?: Record<string, unknown> } = {}) => {
   })
   on('turn.step', async function* ($: any, e: any, next: any) {
     w.bottomSteps.push(e)
+    if (fake.modelStep) return yield* fake.modelStep(e)
     yield { kind: 'text', index: 0, text: 'bottom step' }
     yield { kind: 'stop', stopReason: 'end_turn', usage: null }
     return { turnId: e.turnId, index: e.index, answer: 'bottom step', toolUses: [], stopReason: 'end_turn', usage: null }
@@ -295,7 +313,10 @@ test('session.start asks bitfrostd for its socket, then health, lease and agents
     {
       name: 'gpt-6-sol',
       description: 'GPT-6 Sol for long tasks',
-      prompt: 'unused: this agent runs in a foreign harness via bitfrost',
+      prompt:
+        'You relay the report of an agent that ran in another app through BitFrost. ' +
+        'When asked to call SubagentHandback, pass your last message as its message, word for word, with nothing added or left out. ' +
+        'Do not call any other tool.',
       model: 'gpt-6-sol',
       tools: ['Bash', 'Read', 'Edit', 'Write', 'Grep', 'Glob'],
     },
@@ -325,6 +346,30 @@ test('a broken config tells the user once per session, not only the debug log', 
   const said2 = w.uiLogs.filter((l) => l.to !== 'debug' && l.text.includes('BitFrost is off'))
   expect(said2).toHaveLength(2)
   expect(said2[1].text).toContain(broken)
+})
+
+test('an empty newSettings list does not log a settings notice', { timeoutMs: 20000 }, async ($, on) => {
+  const w = world(on)
+  await start($)
+  // Failed renewals recheck health within the same session.
+  w.fake.renewalReply = { status: 503, body: { error: 'lease unavailable' } }
+  await w.clock.advance(20_000)
+  expect(w.calls.filter((c) => c.path === '/health')).toHaveLength(3)
+  expect(w.uiLogs.filter((l) => l.text === NEW_SETTINGS_NOTICE)).toEqual([])
+})
+
+test('new settings are announced once during repeated health checks in a session', { timeoutMs: 20000 }, async ($, on) => {
+  const w = world(on)
+  w.fake.health.newSettings = ['handback', 'review']
+  await start($)
+  expect(w.uiLogs.filter((l) => l.text === NEW_SETTINGS_NOTICE)).toHaveLength(1)
+
+  w.fake.renewalReply = { status: 503, body: { error: 'lease unavailable' } }
+  await w.clock.advance(20_000)
+  expect(w.calls.filter((c) => c.path === '/health')).toHaveLength(3)
+  const notices = w.uiLogs.filter((l) => l.text === NEW_SETTINGS_NOTICE)
+  expect(notices).toHaveLength(1)
+  expect(notices[0].to).not.toBe('debug')
 })
 
 test('with no models to offer, the helper\'s hint reaches the user', { timeoutMs: 20000 }, async ($, on) => {
@@ -563,6 +608,318 @@ const running = async ($: any, w: any) => {
 
 const interrupts = (w: any, sid: string) => w.posts[`/sessions/${sid}/interrupt`] ?? []
 const handbackOf = (chunks: any[]) => (toolChunk(chunks)?.name === 'SubagentHandback' ? inputOf(chunks).message : null)
+
+const RELAY_MODEL = { model: 'claude-sonnet-4-6', effort: 'low' }
+const RELAY_GIVE_UP = 'Refused: the report was changed. BitFrost hands it back itself now; do not call any tool.'
+const nudgeHandback = (w: any, agentId: string) => {
+  w.api[agentId].push({ role: 'user', content: [{ type: 'text', text: '[handback-send-enforce] Call SubagentHandback(...) now.' }] })
+}
+
+// Enables the official handback setting in this world's helper health response.
+const relayOver = async ($: any, w: any, finalText = 'The parser is fixed.') => {
+  w.fake.health.handback = RELAY_MODEL
+  const agentId = await agentOver($, w, [
+    { type: 'turn_completed', seq: 1, status: 'completed', reason: 'end_turn', finalText },
+  ], { withHandback: true })
+  const report = `Report from GPT-6-Sol (bitfrost:gpt-6-sol, agent ${agentId}, BitFrost session fx-1)\nEnded: end_turn\n\n${finalText}`
+  const shown = await step($, agentId, 0)
+  expect(textsOf(shown.chunks)).toEqual([report])
+  expect(toolChunk(shown.chunks)).toBeUndefined()
+  expect(stopChunk(shown.chunks).stopReason).toBe('end_turn')
+  expect(w.bottomSteps).toEqual([])
+  return { agentId, report }
+}
+
+// The engine below BitFrost plays a Claude response, including its return value.
+const modelHandback = (w: any, message: string) => {
+  w.fake.modelStep = async function* (e: any) {
+    yield { kind: 'tool', index: 0, id: 'toolu_relay', name: 'SubagentHandback' }
+    yield { kind: 'input', index: 0, json: JSON.stringify({ message }) }
+    yield { kind: 'stop', stopReason: 'tool_use', usage: null }
+    return { turnId: e.turnId, index: e.index, answer: '', toolUses: [{ name: 'SubagentHandback', input: { message } }], stopReason: 'tool_use', usage: null }
+  }
+}
+
+for (const { name, failure } of [
+  { name: 'the relay stays off when health has handback null', failure: null },
+  { name: 'the relay stays off when the handback health call returns an HTTP error', failure: 'http' },
+  { name: 'the relay stays off when the handback health call throws', failure: 'transport' },
+] as const) {
+  test(name, { timeoutMs: 20000 }, async ($, on) => {
+    const w = world(on)
+    await start($)
+    const agentId = await agentOver($, w, [
+      { type: 'turn_completed', seq: 1, status: 'completed', reason: 'end_turn', finalText: 'The parser is fixed.' },
+    ], { withHandback: true })
+    // Fail only the handback lookup, after the session has started successfully.
+    w.fake.health.handback = failure ? RELAY_MODEL : null
+    w.fake.healthFailure = failure
+    const healthCalls = w.calls.filter((c) => c.path === '/health').length
+    const s = await step($, agentId, 0)
+    const report = `Report from GPT-6-Sol (bitfrost:gpt-6-sol, agent ${agentId}, BitFrost session fx-1)\nEnded: end_turn\n\nThe parser is fixed.`
+    expect(w.calls.filter((c) => c.path === '/health')).toHaveLength(healthCalls + 1)
+    expect(handbackOf(s.chunks)).toBe(report)
+    expect(stopChunk(s.chunks).stopReason).toBe('tool_use')
+    expect(s.result.toolUses).toEqual([{ name: 'SubagentHandback', input: { message: report } }])
+    expect(w.stored[`agent:${agentId}`].relay).toBeNull()
+    expect(w.bottomSteps).toEqual([])
+    expect((await toolCall($, agentId, { name: 'SubagentHandback', id: toolChunk(s.chunks).id, input: inputOf(s.chunks) })).deny).toBeUndefined()
+    expect(w.bottomTools.at(-1).message).toBe(report)
+  })
+}
+
+test('relay decisions use the debug log without a shell printf', { timeoutMs: 20000 }, async ($, on) => {
+  const w = world(on)
+  await start($)
+  const { agentId, report } = await relayOver($, w)
+  nudgeHandback(w, agentId)
+  modelHandback(w, 'Changed report.')
+  const relayed = await step($, agentId, 1)
+  expect((await toolCall($, agentId, { name: 'SubagentHandback', id: toolChunk(relayed.chunks).id, input: inputOf(relayed.chunks) })).deny).toContain(report)
+
+  modelHandback(w, report)
+  const retry = await step($, agentId, 2)
+  expect(handbackOf(retry.chunks)).toBe(report)
+  expect((await toolCall($, agentId, { name: 'SubagentHandback', id: toolChunk(retry.chunks).id, input: inputOf(retry.chunks) })).deny).toBeUndefined()
+
+  const logs = w.uiLogs.filter((l) => l.text.startsWith('bitfrost: handback '))
+  expect(logs).toHaveLength(2)
+  expect(logs.every((l) => l.to === 'debug')).toBe(true)
+  expect(logs.map((l) => JSON.parse(l.text.slice('bitfrost: handback '.length)))).toEqual([
+    expect.objectContaining({ agent: agentId, ...RELAY_MODEL, event: 'handback', attempt: 1, verbatim: false, sent: 'Changed report.' }),
+    expect.objectContaining({ agent: agentId, ...RELAY_MODEL, event: 'handback', attempt: 2, verbatim: true, sent: report.slice(0, 300) }),
+  ])
+  expect(w.runs.filter((argv) => argv[0] === 'sh' && argv[1] === '-c' && /\bprintf\b/.test(argv[2]))).toEqual([])
+})
+
+test('a relay that throws mid-stream leaves a fresh block index for the fallback handback', { timeoutMs: 20000 }, async ($, on) => {
+  const w = world(on)
+  await start($)
+  const { agentId, report } = await relayOver($, w)
+  nudgeHandback(w, agentId)
+  let closed = 0
+  w.fake.modelStep = async function* () {
+    try {
+      yield { kind: 'text', index: 0, text: 'Calling ' }
+      yield { kind: 'text', index: 0, text: 'handback.' }
+      yield { kind: 'thinking', index: 1, text: 'Relay the report.' }
+      yield { kind: 'tool', index: 2, id: 'toolu_partial', name: 'SubagentHandback' }
+      yield { kind: 'input', index: 2, json: '{"message":' }
+      throw new Error('the Claude stream broke')
+    } finally {
+      closed++
+    }
+  }
+
+  const s = await step($, agentId, 1)
+  expect(w.bottomSteps).toEqual([expect.objectContaining({ model: RELAY_MODEL.model, effort: RELAY_MODEL.effort, agentId })])
+  expect(s.chunks.filter((c: any) => typeof c.index === 'number').map((c: any) => c.index)).toEqual([0, 0, 1, 2, 2, 3, 3])
+  const fallback = s.chunks.slice(-3)
+  expect(toolChunk(fallback)).toMatchObject({ name: 'SubagentHandback', index: 3 })
+  expect(handbackOf(fallback)).toBe(report)
+  expect(stopChunk(s.chunks).stopReason).toBe('tool_use')
+  expect(s.result.toolUses).toEqual([{ name: 'SubagentHandback', input: { message: report } }])
+  expect(closed).toBe(1)
+  expect((await toolCall($, agentId, { name: 'SubagentHandback', id: toolChunk(fallback).id, input: inputOf(fallback) })).deny).toBeUndefined()
+  expect(w.bottomTools.at(-1).message).toBe(report)
+})
+
+test('relay blocks start after BitFrost catch-up text and a thrown stream leaves another fresh index', { timeoutMs: 20000 }, async ($, on) => {
+  const w = world(on)
+  await start($)
+  const { agentId, report } = await relayOver($, w)
+  // The app wrote more while Claude Code was away. Restore replays those events
+  // before reaching the pending relay, so BitFrost already owns block zero.
+  known(w, 'fx-1', {
+    lastSeq: 3,
+    events: [
+      { type: 'text', seq: 2, text: 'More app progress.' },
+      { type: 'turn_completed', seq: 3, status: 'completed', reason: 'end_turn', finalText: 'More app work finished.' },
+    ],
+  })
+  await start($)
+  nudgeHandback(w, agentId)
+  w.fake.modelStep = async function* () {
+    yield { kind: 'text', index: 0, text: 'Claude relay progress.' }
+    yield { kind: 'tool', index: 1, id: 'toolu_offset', name: 'SubagentHandback' }
+    yield { kind: 'input', index: 1, json: '{"message":' }
+    throw new Error('the offset stream broke')
+  }
+  const s = await step($, agentId, 1)
+  expect(textsOf(s.chunks)).toEqual(['More app progress.', 'Claude relay progress.'])
+  expect(s.chunks.filter((c: any) => typeof c.index === 'number').map((c: any) => c.index)).toEqual([0, 1, 2, 2, 3, 3])
+  expect(handbackOf(s.chunks.slice(-3))).toBe(report)
+  expect(w.bottomSteps).toHaveLength(1)
+})
+
+test('closing a relay step early closes the Claude iterator', { timeoutMs: 20000 }, async ($, on) => {
+  const w = world(on)
+  await start($)
+  const { agentId } = await relayOver($, w)
+  nudgeHandback(w, agentId)
+  let closed = 0
+  w.fake.modelStep = async function* () {
+    try {
+      yield { kind: 'text', index: 0, text: 'Relaying.' }
+      yield { kind: 'text', index: 1, text: 'Must not be consumed.' }
+    } finally {
+      closed++
+    }
+  }
+  const stream: any = $.turn.step({ turnId: 'turn-1', index: 1, model: SOL.model, messageCount: 1, agentId } as any)
+  expect((await stream.next()).value).toMatchObject({ kind: 'text', index: 0, text: 'Relaying.' })
+  await stream.return(undefined)
+  await w.clock.settle()
+  expect(closed).toBe(1)
+  expect(interrupts(w, 'fx-1')).toEqual([])
+})
+
+test('a changed relay handback is refused after the last try and the exact fallback is accepted', { timeoutMs: 20000 }, async ($, on) => {
+  const w = world(on)
+  await start($)
+  const { agentId, report } = await relayOver($, w)
+  nudgeHandback(w, agentId)
+  modelHandback(w, 'A changed report.')
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    const s = await step($, agentId, attempt)
+    expect(handbackOf(s.chunks)).toBe('A changed report.')
+    expect(w.bottomSteps).toHaveLength(attempt)
+    expect(w.stored[`agent:${agentId}`].relay.attempts).toBe(attempt)
+    const refused = await toolCall($, agentId, { name: 'SubagentHandback', id: toolChunk(s.chunks).id, input: inputOf(s.chunks) })
+    if (attempt < 3) {
+      expect(refused.deny).toContain(`-----BEGIN REPORT-----\n${report}\n-----END REPORT-----`)
+      expect(w.stored[`agent:${agentId}`].relay.failed).toBe(false)
+    } else {
+      expect(refused.deny).toBe(RELAY_GIVE_UP)
+      expect(w.stored[`agent:${agentId}`].relay.failed).toBe(true)
+    }
+    expect(w.stored[`agent:${agentId}`].relay.retry).toBe(true)
+    expect(w.bottomTools).toEqual([])
+  }
+  // A second tool in the same final model turn must still be checked after failed was set.
+  expect(await toolCall($, agentId, { name: 'SubagentHandback', id: 'toolu_changed_again', input: { message: 'Another changed report.' } })).toEqual({ deny: RELAY_GIVE_UP })
+  expect(w.bottomTools).toEqual([])
+  expect((await toolCall($, agentId, { name: 'SubagentHandback', id: 'toolu_exact', input: { message: report } })).deny).toBeUndefined()
+  expect(w.bottomTools.map((e: any) => e.message)).toEqual([report])
+
+  const fallback = await step($, agentId, 4)
+  expect(w.bottomSteps).toHaveLength(3)
+  expect(handbackOf(fallback.chunks)).toBe(report)
+  expect((await toolCall($, agentId, { name: 'SubagentHandback', id: toolChunk(fallback.chunks).id, input: inputOf(fallback.chunks) })).deny).toBeUndefined()
+})
+
+test('the relay check preserves indentation and line breaks but accepts trailing spaces and CRLF', { timeoutMs: 20000 }, async ($, on) => {
+  const w = world(on)
+  await start($)
+  const { agentId, report } = await relayOver($, w, 'Example:\nif (ready) {\n    run()\n}\nNext line.')
+  nudgeHandback(w, agentId)
+  await step($, agentId, 1)
+  for (const changed of [report.replace('    run()', '  run()'), report.replace('\nNext line.', ' Next line.')]) {
+    const refused = await toolCall($, agentId, { name: 'SubagentHandback', id: 'toolu_whitespace', input: { message: changed } })
+    expect(refused.deny).toContain('must carry the report below verbatim')
+  }
+  expect(w.bottomTools).toEqual([])
+  const formatted = report.split('\n').map((line: string) => `${line}  `).join('\r\n')
+  expect((await toolCall($, agentId, { name: 'SubagentHandback', id: 'toolu_crlf', input: { message: formatted } })).deny).toBeUndefined()
+  expect(w.bottomTools.map((e: any) => e.message)).toEqual([formatted])
+})
+
+test('the relay check accepts spacing and typography within lines and extra blank lines', { timeoutMs: 20000 }, async ($, on) => {
+  const w = world(on)
+  await start($)
+  const { agentId, report } = await relayOver($, w, 'She said “it’s done”—all  tests…\n\n    Kept indented.')
+  nudgeHandback(w, agentId)
+  await step($, agentId, 1)
+  const formatted = report.replace('“it’s done”—all  tests…', '"it\'s   done"-all tests...').replace('\n\n    Kept', '\n\n\n\n    Kept')
+  expect((await toolCall($, agentId, { name: 'SubagentHandback', id: 'toolu_typography', input: { message: formatted } })).deny).toBeUndefined()
+  expect(w.bottomTools.map((e: any) => e.message)).toEqual([formatted])
+})
+
+test('restoring a relay keeps the shown report, attempt count and refused retry budget', { timeoutMs: 20000 }, async ($, on) => {
+  const w = world(on)
+  await start($)
+  const { agentId, report } = await relayOver($, w)
+  expect(w.stored[`agent:${agentId}`]).toMatchObject({ handed: true, relay: { ...RELAY_MODEL, message: report, attempts: 0, retry: false, failed: false } })
+  known(w, 'fx-1', { lastSeq: 1, state: 'idle', messages: { turns: [{ finalText: 'The parser is fixed.', reason: 'end_turn' }] } })
+
+  // session.start clears the module's live agent map, forcing a store-backed restore.
+  // Avoid session.end: its forced save could hide a missing save at the relay transition.
+  await start($)
+  const restored = await step($, agentId, 1)
+  expect(w.posts['/sessions/fx-1/attach']).toHaveLength(1)
+  expect(textsOf(restored.chunks)).toEqual(['Report delivered.'])
+  expect(toolChunk(restored.chunks)).toBeUndefined()
+  expect(w.bottomSteps).toEqual([])
+  expect(w.stored[`agent:${agentId}`].relay.attempts).toBe(0)
+
+  nudgeHandback(w, agentId)
+  modelHandback(w, 'Changed after restore.')
+  await step($, agentId, 2)
+  expect(w.stored[`agent:${agentId}`].relay.attempts).toBe(1)
+  await start($)
+  // Restoring the saved attempt before any refusal must not reset it.
+  const firstRefusal = await toolCall($, agentId, { name: 'SubagentHandback', id: 'toolu_restored', input: { message: 'Changed after restore.' } })
+  expect(firstRefusal.deny).toContain(report)
+  expect(w.stored[`agent:${agentId}`].relay).toMatchObject({ message: report, attempts: 1, retry: true, failed: false })
+
+  for (let attempt = 2; attempt <= 3; attempt++) {
+    await start($)
+    const retry = await step($, agentId, attempt + 1)
+    expect(textsOf(retry.chunks)).toEqual([])
+    expect(handbackOf(retry.chunks)).toBe('Changed after restore.')
+    expect(w.stored[`agent:${agentId}`].relay.attempts).toBe(attempt)
+    const refused = await toolCall($, agentId, { name: 'SubagentHandback', id: toolChunk(retry.chunks).id, input: inputOf(retry.chunks) })
+    expect(refused.deny).toBe(attempt === 3 ? RELAY_GIVE_UP : firstRefusal.deny)
+  }
+  await start($)
+  const fallback = await step($, agentId, 5)
+  expect(handbackOf(fallback.chunks)).toBe(report)
+  expect(textsOf(fallback.chunks)).toEqual([])
+  expect(w.bottomSteps).toHaveLength(3)
+  expect(w.stored[`agent:${agentId}`].relay).toMatchObject({ attempts: 3, failed: true })
+  expect((await toolCall($, agentId, { name: 'SubagentHandback', id: toolChunk(fallback.chunks).id, input: inputOf(fallback.chunks) })).deny).toBeUndefined()
+})
+
+test('a relay report over 50000 characters gives up on its first changed handback', { timeoutMs: 20000 }, async ($, on) => {
+  const w = world(on)
+  await start($)
+  const { agentId, report } = await relayOver($, w, 'x'.repeat(50_001))
+  nudgeHandback(w, agentId)
+  modelHandback(w, 'Too short.')
+  const s = await step($, agentId, 1)
+  expect(await toolCall($, agentId, { name: 'SubagentHandback', id: toolChunk(s.chunks).id, input: inputOf(s.chunks) })).toEqual({ deny: RELAY_GIVE_UP })
+  expect(w.stored[`agent:${agentId}`].relay).toMatchObject({ attempts: 1, retry: true, failed: true })
+  expect(w.bottomTools).toEqual([])
+  const fallback = await step($, agentId, 2)
+  expect(w.bottomSteps).toHaveLength(1)
+  expect(handbackOf(fallback.chunks)).toBe(report)
+  expect(textsOf(fallback.chunks)).toEqual([])
+  expect((await toolCall($, agentId, { name: 'SubagentHandback', id: toolChunk(fallback.chunks).id, input: inputOf(fallback.chunks) })).deny).toBeUndefined()
+})
+
+test('a handed relay without a nudge never shows the report twice even before the first attempt', { timeoutMs: 20000 }, async ($, on) => {
+  const w = world(on)
+  await start($)
+  const { agentId, report } = await relayOver($, w)
+  const closing = await step($, agentId, 1)
+  expect(textsOf(closing.chunks)).toEqual(['Report delivered.'])
+  expect(toolChunk(closing.chunks)).toBeUndefined()
+  expect(stopChunk(closing.chunks).stopReason).toBe('end_turn')
+  expect(w.bottomSteps).toEqual([])
+  expect(w.stored[`agent:${agentId}`].relay.attempts).toBe(0)
+
+  nudgeHandback(w, agentId)
+  modelHandback(w, report)
+  const relayed = await step($, agentId, 2)
+  await toolCall($, agentId, { name: 'SubagentHandback', id: toolChunk(relayed.chunks).id, input: inputOf(relayed.chunks) })
+  addToolResult(w, agentId, toolChunk(relayed.chunks).id, 'delivered')
+  w.api[agentId].push({ role: 'user', content: [{ type: 'tool_result', tool_use_id: toolChunk(relayed.chunks).id, content: 'delivered' }] })
+  const delivered = await step($, agentId, 3)
+  expect(textsOf(delivered.chunks)).toEqual(['Report delivered.'])
+  expect(toolChunk(delivered.chunks)).toBeUndefined()
+  expect(stopChunk(delivered.chunks).stopReason).toBe('end_turn')
+  expect(w.bottomSteps).toHaveLength(1)
+})
 
 test(
   'an aborted tool call stops the app session with exactly one interrupt',

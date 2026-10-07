@@ -12,6 +12,7 @@ import { createHash } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import type { ProviderEnv } from './provider.ts'
 import { PROVIDERS } from './providers/index.ts'
+import { claudeModelId, pendingFeatures } from './features.ts'
 
 const HOME = os.homedir()
 const HERE = path.dirname(fileURLToPath(import.meta.url))
@@ -45,7 +46,17 @@ export const canonical = (p: string) => {
 }
 
 // Invalid config falls back to defaults and blocks new leases.
-export type Config = { allowedProfiles: string[]; providers: Record<string, any>; error: string | null; warnings: string[]; retention?: { eventsDays: number; messagesDays: number } }
+export type Config = {
+  allowedProfiles: string[]
+  providers: Record<string, any>
+  error: string | null
+  warnings: string[]
+  retention?: { eventsDays: number; messagesDays: number }
+  // The Claude model that writes the handback step, or null when it's off.
+  handback?: { model: string; effort: string | null } | null
+  // Features still to be asked about (bitfrost setup).
+  newSettings?: string[]
+}
 
 export function loadConfig(file = CONFIG): Config {
   let cfg: any = {}
@@ -67,12 +78,16 @@ export function loadConfig(file = CONFIG): Config {
     allowedProfiles: (cfg.allowedProfiles ?? ['~/.claude']).map(canonical),
     providers,
     retention: { eventsDays: cfg.retention?.eventsDays ?? 30, messagesDays: cfg.retention?.messagesDays ?? 180 },
+    handback: cfg.handback?.enabled === true && cfg.handback.model ? { model: claudeModelId(cfg.handback.model), effort: cfg.handback.effort ?? null } : null,
+    // An invalid config is reported on its own, so it asks nothing.
+    newSettings: problems.length ? [] : pendingFeatures(cfg).map((f) => f.id),
     error: problems.length ? `${file} is invalid: ${problems.join('; ')}` : null,
     warnings: warnings.map((w) => `${file}: ${w}`),
   }
 }
 
-const TOP_KEYS = new Set(['allowedProfiles', 'providers', 'codexBin', 'zcodeDir', 'retention'])
+const TOP_KEYS = new Set(['allowedProfiles', 'providers', 'codexBin', 'zcodeDir', 'retention', 'handback'])
+const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max']
 const isObject = (v: unknown) => typeof v === 'object' && v !== null && !Array.isArray(v)
 const isStrings = (v: unknown) => Array.isArray(v) && v.every((x) => typeof x === 'string')
 
@@ -88,6 +103,16 @@ export function validateConfig(cfg: unknown, known: string[] = PROVIDERS.map((p)
     if (!isObject(c.retention)) errors.push('retention must be an object')
     else for (const key of ['eventsDays', 'messagesDays']) {
       if (key in c.retention && (!Number.isFinite(c.retention[key]) || c.retention[key] < 0)) errors.push(`retention.${key} must be a non-negative number`)
+    }
+  }
+  if ('handback' in c) {
+    const h = c.handback
+    if (!isObject(h)) errors.push('handback must be an object')
+    else {
+      if ('enabled' in h && typeof h.enabled !== 'boolean') errors.push('handback.enabled must be true or false')
+      if ('model' in h && (typeof h.model !== 'string' || !h.model)) errors.push('handback.model must be a model name')
+      if (h.enabled === true && !h.model) errors.push('handback.model is needed when handback.enabled is true')
+      if ('effort' in h && h.effort !== null && !EFFORTS.includes(h.effort)) errors.push(`handback.effort must be one of ${EFFORTS.join(', ')}`)
     }
   }
   if ('providers' in c && !isObject(c.providers)) errors.push('providers must be an object')

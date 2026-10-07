@@ -48,6 +48,8 @@ import { PROVIDERS } from './providers/index.ts'
 import { selftest, selftestAll } from './selftest.ts'
 import { update } from './update.ts'
 import { uninstall } from './uninstall.ts'
+import { FEATURES, findFeature } from './features.ts'
+import { setupFeatures } from './settings.ts'
 
 const MAX_WAIT_MS = 30_000
 const GRACE_MS = 45_000 // Wait after the last lease ends.
@@ -358,8 +360,10 @@ function serve() {
     const parts = url.pathname.split('/').filter(Boolean)
     const waitMs = Math.min(Number(url.searchParams.get('waitMs') ?? 0) || 0, MAX_WAIT_MS)
     try {
-      if (req.method === 'GET' && url.pathname === '/health')
-        return json(res, 200, { ok: true, pid: process.pid, version: VERSION, store: { degraded: store.degraded, error: store.error }, busy: table.running().length > 0, configError: readConfig().error })
+      if (req.method === 'GET' && url.pathname === '/health') {
+        const config = readConfig()
+        return json(res, 200, { ok: true, pid: process.pid, version: VERSION, store: { degraded: store.degraded, error: store.error }, busy: table.running().length > 0, configError: config.error, handback: config.handback ?? null, newSettings: config.newSettings ?? [] })
+      }
       if (req.method === 'GET' && url.pathname === '/status') return json(res, 200, status())
       if (req.method === 'POST' && url.pathname === '/shutdown') {
         if (table.running().length) return json(res, 409, { error: 'agents are running' })
@@ -579,10 +583,14 @@ function serve() {
   for (const sig of ['SIGINT', 'SIGTERM'] as const) process.on(sig, () => void shutdown())
 }
 
-function setup(id: string | undefined) {
+// setup alone asks about unanswered settings; --new does the same quietly, for the installer.
+async function setup(id: string | undefined) {
+  if (id === undefined || id === '--new') process.exit(await setupFeatures({ newOnly: id === '--new' }))
+  const feature = findFeature(id)
+  if (feature) process.exit(await setupFeatures({ features: [feature] }))
   const f = PROVIDERS.find((p: ProviderFactory) => p.id === id)
   if (!f?.setup) {
-    console.error(`bitfrostd setup: providers with a setup step: ${PROVIDERS.filter((p) => p.setup).map((p) => p.id).join(', ')}`)
+    console.error(`bitfrostd setup: settings: ${FEATURES.map((x) => x.id).join(', ')}; apps with a setup step: ${PROVIDERS.filter((p) => p.setup).map((p) => p.id).join(', ')}`)
     process.exit(2)
   }
   const config = loadConfig()
@@ -653,6 +661,8 @@ usage: bitfrost <command>
   update                    install the latest release, if it's newer
   uninstall [--yes]         remove BitFrost from Claude Code, ZCode and this machine
     [--keep-config]         with --yes, keep your config
+  setup                     choose settings you haven't chosen yet
+  setup <setting>           choose a setting again (${FEATURES.map((f) => f.id).join(', ')})
   setup <app>               one-time setup for an app (${PROVIDERS.filter((p) => p.setup).map((p) => p.id).join(', ')})
   selftest <app> [model]    check that an app works with BitFrost
   selftest --all            check every app
@@ -665,8 +675,8 @@ Guide: https://github.com/${process.env.BITFROST_REPO || 'SavaSoftworks/BitFrost
 const mode = process.argv[2]
 if (mode === undefined || mode === 'help' || mode === '--help' || mode === '-h') console.log(HELP)
 else if (mode === 'version' || mode === '--version' || mode === '-v') console.log(VERSION)
-else if (mode === 'setup') setup(process.argv[3])
-else if (mode === 'zcode-setup') setup('zcode')
+else if (mode === 'setup') await setup(process.argv[3])
+else if (mode === 'zcode-setup') await setup('zcode')
 else if (mode === 'ensure') await ensure()
 else if (mode === 'serve') serve()
 else if (mode === 'socket') console.log(SOCKET)

@@ -90,6 +90,8 @@ If you use a Claude profile other than `~/.claude` (`CLAUDE_CONFIG_DIR`), see [C
 bitfrost update
 ```
 
+If the new release has settings you haven't chosen, it asks about them at the end.
+
 ## Uninstall
 
 ```bash
@@ -107,6 +109,8 @@ Ask Claude for a model by name:
 Claude is told at the start of each session which models you have and what they are called ("sol6", "glm", ...). If none can be offered, the session tells you why.
 
 When a subagent asks for permission, the request comes to you, not Claude. No answer means Deny. In auto mode, a safety review decides instead.
+
+By default BitFrost hands a finished subagent's report back to Claude itself. With official handback on, a Claude model writes that handback step instead, so Claude Code's safety classifiers (auto mode) review the report. BitFrost only accepts the report word for word, gives the model up to three tries, then hands it over itself. It is off by default; [the guide](GUIDE.md#what-is-official-handback) has the details.
 
 To see what the BitFrost daemon is doing and which apps it found:
 

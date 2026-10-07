@@ -54,6 +54,13 @@ function tellConfigError($, detail) {
   $.ui.log(`BitFrost is off: ${detail} Fix your BitFrost config and restart this session.`)
 }
 
+// Tell the user about settings they haven't chosen once per session. They stay off until then.
+let toldNewSettings = false
+function tellNewSettings($) {
+  toldNewSettings = true
+  $.ui.log('BitFrost has new settings, off until you choose them. To choose them, run bitfrost setup in a terminal.')
+}
+
 const stepResult = (e, answer, toolUses, stopReason, usage = null) =>
   ({ turnId: e.turnId, index: e.index, answer, toolUses, stopReason, usage })
 
@@ -95,6 +102,7 @@ async function ensureDaemon($) {
     health = await daemon($, 'GET', '/health')
   } catch {}
   if (health?.configError && !toldConfigError) tellConfigError($, health.configError)
+  if (health?.newSettings?.length && !toldNewSettings) tellNewSettings($)
   // A newer helper from another session works for us too.
   const older = (a, b) => {
     const pa = a.split('.').map(Number)
@@ -136,7 +144,11 @@ async function syncAgents($) {
     await $.agent.register({
       name: def.name,
       description: def.description,
-      prompt: 'unused: this agent runs in a foreign harness via bitfrost',
+      // Only the handback step runs on a Claude model; see handbackModel.
+      prompt:
+        'You relay the report of an agent that ran in another app through BitFrost. ' +
+        'When asked to call SubagentHandback, pass your last message as its message, word for word, with nothing added or left out. ' +
+        'Do not call any other tool.',
       model: def.model, // only a label; Claude never calls it
       tools: ['Bash', 'Read', 'Edit', 'Write', 'Grep', 'Glob'],
     })
@@ -616,6 +628,7 @@ const newState = (def, o) => ({
   queued: [], // seen by session.append, not merged yet
   queuedSent: o.queuedSent ?? [], // keys already forwarded
   queuedBaseline: o.queuedBaseline ?? true, // false: a record from before these were tracked
+  relay: o.relay ?? null, // official handback: the Claude model's attempts
 })
 
 // What a restore needs, kept in $.store under agent:<agentId>.
@@ -633,6 +646,7 @@ const recordOf = (st) => ({
   handed: st.phase === 'handed',
   queuedSent: st.queuedSent,
   queuedBaseline: true,
+  relay: st.relay,
 })
 
 async function saveRecord($, agentId, st, force = false) {
@@ -1245,6 +1259,7 @@ export const register = (on) => {
     const home = (await $.env.get('HOME')) ?? ''
     const profile = (await $.env.get('CLAUDE_CONFIG_DIR')) ?? `${home}/.claude`
     toldConfigError = false
+    toldNewSettings = false
     // A new session has none of our agent types yet; stored subagents come back on use.
     agents.clear()
     agentsAt = 0
@@ -1407,7 +1422,22 @@ export const register = (on) => {
     if (e.tool === 'SendMessage') return sendMessageCall(e, () => next(e))
     const st = await stateOf($, e.agentId)
     if (!st) return next(e)
-    if (e.tool === 'SubagentHandback') return next(e)
+    if (e.tool === 'SubagentHandback') {
+      // Only the report word for word may go back. A changed one is refused, never rewritten.
+      // Checked even after the last try, since BitFrost's own handback carries the report unchanged.
+      if (st.relay?.attempts) {
+        const same = plain(e.message) === plain(st.relay.message)
+        await relayLog($, { agent: e.agentId, model: st.relay.model, effort: st.relay.effort, event: 'handback', attempt: st.relay.attempts, verbatim: same, sent: String(e.message ?? '').slice(0, 300) })
+        if (!same) {
+          // A long report isn't worth repeating in refusals, so BitFrost hands it back at once.
+          if (st.relay.attempts >= RELAY_TRIES || st.relay.message.length > RELAY_REPEAT_CHARS) st.relay.failed = true
+          st.relay.retry = true
+          await saveRecord($, e.agentId, st, true)
+          return { deny: st.relay.failed ? RELAY_GIVE_UP : RELAY_REFUSAL(st.relay.message) }
+        }
+      }
+      return next(e)
+    }
     if (st.broken) return { deny: st.broken }
     if (st.attachPending && !(await ensureAttached($, st))) return { deny: st.broken ?? `BitFrost could not reattach ${st.def.displayName} yet (${st.attachError}).` }
     const p = st.pending.get(e.tool_use_id)
@@ -1476,6 +1506,35 @@ function finish(st, ev) {
   st.endReason = ev.reason ?? (ev.type === 'session_failed' ? 'crashed' : ev.status === 'completed' ? 'end_turn' : ev.status === 'interrupted' ? 'interrupted' : 'error')
   st.endError = ev.error ?? null
   st.endCode = ev.providerErrorCode ?? null
+}
+
+// Official handback: a Claude model writes the handback step, so auto mode's classifier can review it.
+// The handback setting in BitFrost's config picks the model; off until the user turns it on.
+const RELAY_MAX_CHARS = 500_000
+const RELAY_REPEAT_CHARS = 50_000
+const RELAY_TRIES = 3
+const RELAY_REFUSAL = (report) =>
+  'Refused: SubagentHandback must carry the report below verbatim. Do not add, remove or change anything in it, ' +
+  'and do not redo or answer the task yourself. Call SubagentHandback again with everything between the two marker lines as its message.' +
+  `\n-----BEGIN REPORT-----\n${report}\n-----END REPORT-----`
+const RELAY_GIVE_UP = 'Refused: the report was changed. BitFrost hands it back itself now; do not call any tool.'
+// Same text once quote styles, dashes, ellipses, line endings and trailing spaces are set aside.
+// Indentation and line breaks still count, since they can change what code or a list means.
+const plain = (text) =>
+  String(text ?? '').normalize('NFKC').replace(/[\u2018\u2019\u201A\u201B\u2032]/g, "'").replace(/[\u201C\u201D\u201E\u201F\u2033]/g, '"')
+    .replace(/[\u2010-\u2015\u2212]/g, '-').replace(/\u2026/g, '...').replace(/\r\n?/g, '\n')
+    .split('\n').map((line) => line.replace(/(\S)[^\S\n]+/g, '$1 ').trimEnd()).join('\n')
+    .replace(/\n{3,}/g, '\n\n').trim()
+
+const relayLog = ($, entry) => debug($, `bitfrost: handback ${JSON.stringify(entry)}`)
+// Asked on every handback, so a changed setting applies without a restart. A helper that can't answer means off.
+async function handbackModel($) {
+  try {
+    const h = await daemon($, 'GET', '/health')
+    return h?.handback?.model ? { model: h.handback.model, effort: h.handback.effort ?? null } : null
+  } catch {
+    return null
+  }
 }
 
 async function readRows($, agentId, as) {
@@ -1549,7 +1608,27 @@ async function* replayStep($, e, next, st, ctl) {
     const where = st.sessionId ? `, BitFrost session ${st.sessionId}` : ''
     const ended = `Ended: ${reason}${st.endCode ? ` (code ${st.endCode})` : ''}`
     const partial = reason === 'end_turn' ? '' : '\nThe turn did not finish, so the text below is partial.'
-    const input = { message: `Report from ${st.def.displayName} (bitfrost:${st.def.name}, agent ${e.agentId}${where})\n${ended}${partial}\n\n${message}` }
+    // Once the relay showed a report, that exact report is the one handed back.
+    const input = { message: st.relay?.message ?? `Report from ${st.def.displayName} (bitfrost:${st.def.name}, agent ${e.agentId}${where})\n${ended}${partial}\n\n${message}` }
+    // Show the report and end the turn. Claude Code nudges for the handback, and a Claude model answers it.
+    if (!st.relay) {
+      const relay = apiText.length <= RELAY_MAX_CHARS ? await handbackModel($) : null
+      if (relay) {
+        st.relay = { ...relay, message: input.message, attempts: 0, retry: false, failed: false }
+        await saveRecord($, e.agentId, st, true)
+        yield say(input.message)
+        const usage = takeUsage()
+        yield end('end_turn', usage)
+        return stepResult(e, texts.join('\n'), [], 'end_turn', usage)
+      }
+    } else if (nudged && !st.relay.attempts && !st.relay.failed) {
+      try {
+        return yield* relayStep()
+      } catch (err) {
+        st.relay.failed = true
+        await relayLog($, { agent: e.agentId, model: st.relay.model, event: 'step_error', error: err.message })
+      }
+    }
     yield { kind: 'tool', index: idx, id: newToolId(), name: 'SubagentHandback' }
     yield { kind: 'input', index: idx, json: JSON.stringify(input) }
     const usage = takeUsage()
@@ -1561,6 +1640,38 @@ async function* replayStep($, e, next, st, ctl) {
     const reason = st.endReason ?? 'end_turn'
     if (reason !== 'end_turn' && !st.ownFailure) yield say(statusLine(st))
     if (st.finalText && lastText !== st.finalText) yield say(st.finalText)
+  }
+  // Hands this step to the Claude model the handback setting picked.
+  // Its blocks are numbered after BitFrost's, so a handback BitFrost adds after an error never shares a number.
+  const relayStep = async function* () {
+    st.relay.attempts++
+    await saveRecord($, e.agentId, st, true)
+    const step = { ...e, model: st.relay.model }
+    if (st.relay.effort) step.effort = st.relay.effort
+    else delete step.effort
+    ctl.settled = true
+    const base = idx
+    const source = next(step)
+    const it = source[Symbol.asyncIterator]?.() ?? source
+    let done = false
+    try {
+      for (let r = await it.next(); ; r = await it.next()) {
+        if (r.done) {
+          done = true
+          return r.value
+        }
+        const chunk = r.value
+        if (typeof chunk?.index !== 'number') {
+          yield chunk
+          continue
+        }
+        idx = Math.max(idx, base + chunk.index + 1)
+        yield { ...chunk, index: base + chunk.index }
+      }
+    } finally {
+      // Closed early, as when the step is aborted: close the model's step too.
+      if (!done) await it.return?.()
+    }
   }
   const fail = (text) => {
     st.finalText = text
@@ -1584,8 +1695,22 @@ async function* replayStep($, e, next, st, ctl) {
   const isUserText = !!last && last.role === 'user' && !last.toolResults?.length
   const newInput = isUserText && rows.length !== st.lastInputAt
   const queued = newQueued(st, api)
+  // The last handback didn't match the report, so the model tries again, or BitFrost hands back itself.
+  if (st.relay?.retry && st.phase === 'handed' && !newInput && !queued.length) {
+    st.relay.retry = false
+    if (!st.relay.failed) {
+      try {
+        return yield* relayStep()
+      } catch (err) {
+        st.relay.failed = true
+        await relayLog($, { agent: e.agentId, model: st.relay.model, event: 'step_error', error: err.message })
+      }
+    }
+    return yield* handBack()
+  }
   if (rows && st.phase === 'handed' && !nudged && !newInput && !queued.length) {
-    yield* closingText()
+    // The relay already showed the report before its handback.
+    if (!st.relay) yield* closingText()
     if (!texts.length) yield say('Report delivered.')
     const usage = takeUsage()
     yield end('end_turn', usage)
@@ -1597,6 +1722,7 @@ async function* replayStep($, e, next, st, ctl) {
   if (newInput) {
     st.lastInputAt = rows.length
     st.finalText = st.endReason = st.endCode = st.endError = null
+    st.relay = null
     st.ownFailure = false
     try {
       if (!st.sessionId) {
@@ -1633,6 +1759,7 @@ async function* replayStep($, e, next, st, ctl) {
   if (queued.length && st.sessionId) {
     if (st.phase !== 'running' && st.phase !== 'stopping') {
       st.finalText = st.endReason = st.endCode = st.endError = null
+      st.relay = null
       st.ownFailure = false
     }
     try {

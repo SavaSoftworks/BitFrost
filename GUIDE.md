@@ -44,6 +44,10 @@ Add it to `allowedProfiles` in `~/.config/bitfrost/config.json`:
 
 Profiles not listed get no subagents.
 
+### Choosing settings
+
+Run `bitfrost setup` to answer any settings you haven't chosen yet, and `bitfrost setup handback` to answer one again. The installer and `bitfrost update` ask about them at the end of an install, using the new release's own questions. Without a terminal nothing is asked: the settings stay off, and the installer lists `bitfrost setup` as a next step. A Claude session also mentions unchosen settings, once.
+
 ### Updating, or installing a specific version
 
 Run `bitfrost update`. It installs the latest release if it's newer than yours, and does nothing otherwise.
@@ -130,6 +134,18 @@ It holds the subagents' commands and tool output, so it can contain anything the
 ### Who answers a subagent's permission requests?
 
 You, never Claude. No answer means Deny. In auto mode, a safety review decides instead.
+
+### What is official handback?
+
+Normally BitFrost writes the step that returns a finished subagent's report to Claude. With this setting on, a Claude model writes that step instead, so auto mode's safety classifier reviews the report on its way through. BitFrost only accepts the report word for word: the model gets up to three tries, then BitFrost hands the report over itself. The extra Claude step counts toward your Claude usage.
+
+Turn it on with `bitfrost setup handback`, or in `~/.config/bitfrost/config.json`:
+
+```json
+{ "handback": { "enabled": true, "model": "sonnet", "effort": "low" } }
+```
+
+`model` is a family name (Haiku, Sonnet, Opus or Fable; Sonnet is the default) or a full model id. A family name means that family's newest model as of your BitFrost release, so updating BitFrost moves you to a newer one. `effort` is `low` unless you set it. A change applies without a restart.
 
 ### Does it use my accounts?
 
