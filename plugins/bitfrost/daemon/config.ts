@@ -16,9 +16,13 @@ import { PROVIDERS } from './providers/index.ts'
 const HOME = os.homedir()
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 export const RUN_DIR = process.env.BITFROST_RUNTIME_DIR || path.join(process.env.XDG_RUNTIME_DIR ?? `/tmp/bitfrost-${process.getuid!()}`, 'bitfrost')
+export const DATA_DIR = process.env.BITFROST_DATA_DIR || (process.platform === 'darwin'
+  ? path.join(HOME, 'Library', 'Application Support', 'BitFrost')
+  : path.join(process.env.XDG_DATA_HOME || path.join(HOME, '.local', 'share'), 'bitfrost'))
 export const SOCKET = path.join(RUN_DIR, 'bitfrostd.sock')
 export const LOG = path.join(RUN_DIR, 'bitfrostd.log')
 export const LOCK = path.join(RUN_DIR, 'bitfrostd.lock')
+export const DATA_LOCK = path.join(DATA_DIR, 'daemon.lock')
 export const CACHE = path.join(process.env.XDG_CACHE_HOME ?? path.join(HOME, '.cache'), 'bitfrost', 'agents.json')
 export const CONFIG = path.join(process.env.XDG_CONFIG_HOME ?? path.join(HOME, '.config'), 'bitfrost', 'config.json')
 export const VERSION = JSON.parse(fs.readFileSync(path.join(HERE, '..', '.claude-plugin', 'plugin.json'), 'utf8')).version as string
@@ -26,7 +30,8 @@ export const VERSION = JSON.parse(fs.readFileSync(path.join(HERE, '..', '.claude
 export function log(msg: string) {
   const line = `${new Date().toISOString()} ${msg}\n`
   if (process.stderr.isTTY) process.stderr.write(line)
-  fs.appendFileSync(LOG, line)
+  // A log that can't be written must never stop the helper, or its shutdown.
+  try { fs.appendFileSync(LOG, line) } catch {}
 }
 
 const expandHome = (p: string) => (p.startsWith('~') ? path.join(HOME, p.slice(1)) : p)
@@ -40,7 +45,7 @@ export const canonical = (p: string) => {
 }
 
 // Invalid config falls back to defaults and blocks new leases.
-export type Config = { allowedProfiles: string[]; providers: Record<string, any>; error: string | null; warnings: string[] }
+export type Config = { allowedProfiles: string[]; providers: Record<string, any>; error: string | null; warnings: string[]; retention?: { eventsDays: number; messagesDays: number } }
 
 export function loadConfig(file = CONFIG): Config {
   let cfg: any = {}
@@ -61,12 +66,13 @@ export function loadConfig(file = CONFIG): Config {
   return {
     allowedProfiles: (cfg.allowedProfiles ?? ['~/.claude']).map(canonical),
     providers,
+    retention: { eventsDays: cfg.retention?.eventsDays ?? 30, messagesDays: cfg.retention?.messagesDays ?? 180 },
     error: problems.length ? `${file} is invalid: ${problems.join('; ')}` : null,
     warnings: warnings.map((w) => `${file}: ${w}`),
   }
 }
 
-const TOP_KEYS = new Set(['allowedProfiles', 'providers', 'codexBin', 'zcodeDir'])
+const TOP_KEYS = new Set(['allowedProfiles', 'providers', 'codexBin', 'zcodeDir', 'retention'])
 const isObject = (v: unknown) => typeof v === 'object' && v !== null && !Array.isArray(v)
 const isStrings = (v: unknown) => Array.isArray(v) && v.every((x) => typeof x === 'string')
 
@@ -78,6 +84,12 @@ export function validateConfig(cfg: unknown, known: string[] = PROVIDERS.map((p)
   for (const key of Object.keys(c)) if (!TOP_KEYS.has(key)) warnings.push(`unknown key ${key}`)
   if ('allowedProfiles' in c && !isStrings(c.allowedProfiles)) errors.push('allowedProfiles must be a list of strings')
   for (const key of ['codexBin', 'zcodeDir']) if (key in c && typeof c[key] !== 'string') errors.push(`${key} must be a string`)
+  if ('retention' in c) {
+    if (!isObject(c.retention)) errors.push('retention must be an object')
+    else for (const key of ['eventsDays', 'messagesDays']) {
+      if (key in c.retention && (!Number.isFinite(c.retention[key]) || c.retention[key] < 0)) errors.push(`retention.${key} must be a non-negative number`)
+    }
+  }
   if ('providers' in c && !isObject(c.providers)) errors.push('providers must be an object')
   else {
     for (const [id, entry] of Object.entries<any>(c.providers ?? {})) {
@@ -100,6 +112,7 @@ export function providerEnv(config: Config, id: string): ProviderEnv {
   const recordDir = process.env.BITFROST_RECORD_DIR
   return {
     runDir: RUN_DIR,
+    dataDir: DATA_DIR,
     socket: SOCKET,
     log,
     config: config.providers[id] ?? {},

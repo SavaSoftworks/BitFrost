@@ -17,6 +17,7 @@ const cancelled = new Set()
 const cancelWaiters = new Map()
 let options = structuredClone(scenario.newSession?.result?.configOptions ?? [])
 let turnIndex = 0
+let sessionIndex = 0
 
 const send = (msg) => process.stdout.write(JSON.stringify({ jsonrpc: '2.0', ...msg }) + '\n')
 const fill = (value, sessionId) => JSON.parse(JSON.stringify(value).replaceAll('$SESSION', sessionId))
@@ -45,11 +46,13 @@ function setOption(configId, value) {
 
 async function runTurn(id, sessionId) {
   cancelled.delete(sessionId)
-  const steps = scenario.turns[turnIndex++] ?? []
+  const loaded = process.env.BITFROST_ACP_MARK && fs.existsSync(process.env.BITFROST_ACP_MARK)
+  const steps = (loaded ? scenario.afterRestart ?? scenario.turns : scenario.turns)[turnIndex++] ?? []
   let result = { stopReason: 'end_turn' }
   const play = async (list) => {
     for (const step of list) {
       if (step.update) send({ method: 'session/update', params: { sessionId, update: fill(step.update, sessionId) } })
+      else if (step.delay) await new Promise((resolve) => setTimeout(resolve, step.delay))
       else if (step.ask) {
         const answer = await ask(step.ask, fill(step.params, sessionId))
         const picked = answer.outcome?.optionId ? step.params.options.find((o) => o.optionId === answer.outcome.optionId)?.kind : (answer.outcome?.outcome ?? answer.action)
@@ -83,8 +86,16 @@ createInterface({ input: process.stdin }).on('line', (line) => {
   switch (msg.method) {
     case 'initialize':
       return send({ id: msg.id, result: scenario.initialize })
-    case 'session/new':
+    case 'session/load':
+      if (scenario.ignoreLoad) return
+      if (scenario.loadDelay) return setTimeout(() => send({ id: msg.id, ...structuredClone(scenario.newSession) }), scenario.loadDelay)
       return send({ id: msg.id, ...structuredClone(scenario.newSession) })
+    case 'session/new': {
+      const answer = structuredClone(scenario.newSession)
+      if (answer.result && scenario.uniqueSessions) answer.result.sessionId += `_${++sessionIndex}`
+      if (scenario.newDelay) return setTimeout(() => send({ id: msg.id, ...answer }), scenario.newDelay)
+      return send({ id: msg.id, ...answer })
+    }
     case 'session/set_config_option': {
       const answer = setOption(p.configId, p.value)
       if (answer.result && options.find((o) => o.id === p.configId)?.category === 'model') {
@@ -99,6 +110,7 @@ createInterface({ input: process.stdin }).on('line', (line) => {
     case 'session/prompt':
       return void runTurn(msg.id, p.sessionId)
     case 'session/cancel':
+      if (scenario.ignoreCancel) return
       cancelled.add(p.sessionId)
       cancelWaiters.get(p.sessionId)?.()
       cancelWaiters.delete(p.sessionId)

@@ -10,7 +10,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { createInterface } from 'node:readline'
-import type { Decision, Question } from '../events.ts'
+import type { Decision, EndReason, Question } from '../events.ts'
 import type { HarnessModel, Provider, ProviderCapabilities, SpawnRequest } from '../provider.ts'
 import type { Session } from '../session.ts'
 import { asClaudeTool, blankTool, choicesOf, commandOf, confirmShape, cwdOf, describeAction, exitCodeOf, FILE_KINDS, fileChange } from './acp-shapes.ts'
@@ -63,6 +63,7 @@ type Turn = {
   finalText: string
   tools: Map<string, ToolCall>
   lastUsed: number | null
+  denied: { at: number; reason: string } | null
 }
 
 type State = {
@@ -76,7 +77,6 @@ type State = {
   drifted: boolean
   dead: boolean
   turn: Turn | null
-  queue: string[]
   grants: Set<string>
 }
 
@@ -102,10 +102,12 @@ export class AcpProvider implements Provider {
   private ready: Promise<void> | null = null
   private agentCaps: Json = {}
   private nextId = 1
-  private requests = new Map<number, { resolve: (v: Json) => void; reject: (e: Error) => void }>()
+  private requests = new Map<number, { session?: Session; resolve: (v: Json) => void; reject: (e: Error) => void }>()
   private byAcpId = new Map<string, State>()
   private states = new Map<string, State>()
   private pending = new Map<string, Pending>()
+  private opening = new Set<Session>()
+  private discovering = 0
 
   constructor(spec: AcpAgentSpec, launch: AcpLaunch, opts: AcpOptions) {
     this.id = spec.id
@@ -154,13 +156,19 @@ export class AcpProvider implements Provider {
     this.ready = null
     this.log(`${this.id}: ${this.launch.bin} ${why}`)
     this.pending.clear()
-    for (const st of this.states.values()) {
-      if (st.dead) continue
+    for (const session of this.opening) if (session.info.id) session.detach()
+    const states = [...this.states.values()]
+    this.states.clear()
+    this.byAcpId.clear()
+    for (const st of states) {
       st.dead = true
-      if (!st.turn) continue
+      const turn = st.turn
       st.turn = null
-      st.queue = []
-      st.session.push({ type: 'session_failed', error: `${this.displayName} ${why}` })
+      st.session.detach()
+      if (turn?.cancelled) {
+        this.flush(st, turn)
+        st.session.push({ type: 'turn_completed', turnId: turn.id, status: turn.wrongModel ? 'failed' : 'interrupted', reason: turn.wrongModel ? 'wrong_model' : 'interrupted', finalText: turn.finalText })
+      } else if (turn) st.session.push({ type: 'session_failed', error: `${this.displayName} ${why}` })
     }
     const err = new Error(`${this.displayName} ${why}`)
     for (const r of this.requests.values()) r.reject(err)
@@ -171,11 +179,11 @@ export class AcpProvider implements Provider {
     this.proc?.stdin!.write(JSON.stringify({ jsonrpc: '2.0', ...msg }) + '\n')
   }
 
-  private request(method: string, params: Json): Promise<Json> {
+  private request(method: string, params: Json, session?: Session): Promise<Json> {
     if (!this.proc) return Promise.reject(new Error(`${this.displayName} is not running`))
     const id = this.nextId++
     return new Promise((resolve, reject) => {
-      this.requests.set(id, { resolve, reject })
+      this.requests.set(id, { resolve, reject, session })
       this.send({ id, method, params })
     })
   }
@@ -217,9 +225,9 @@ export class AcpProvider implements Provider {
     return new Error(`${this.displayName} could not start a session: ${e.message}. If it needs signing in, run \`${this.spec.loginCommand}\` in a terminal, then try again.`)
   }
 
-  private async newSession(cwd: string): Promise<Json> {
+  private async newSession(cwd: string, session?: Session): Promise<Json> {
     try {
-      return await this.request('session/new', { cwd, mcpServers: [] })
+      return await this.request('session/new', { cwd, mcpServers: [] }, session)
     } catch (e) {
       throw this.explain(e)
     }
@@ -232,13 +240,18 @@ export class AcpProvider implements Provider {
     if (method) this.request(method, { sessionId: acpId }).catch(() => {})
   }
 
-  private async setOption(acpId: string, configId: string, value: string): Promise<Json[]> {
-    const r = await this.request('session/set_config_option', { sessionId: acpId, configId, value })
+  private async setOption(acpId: string, configId: string, value: string, session?: Session): Promise<Json[]> {
+    const r = await this.request('session/set_config_option', { sessionId: acpId, configId, value }, session)
     return r?.configOptions ?? []
   }
 
 
   async listModels(): Promise<HarnessModel[]> {
+    this.discovering++
+    try { return await this.discoverModels() } finally { this.discovering-- }
+  }
+
+  private async discoverModels(): Promise<HarnessModel[]> {
     const fresh = (c: typeof this.models) => c && Date.now() - c.at < MODELS_TTL_MS && JSON.stringify(c.allow) === JSON.stringify(this.allow)
     if (!fresh(this.models) && this.cacheFile) {
       try {
@@ -312,20 +325,20 @@ export class AcpProvider implements Provider {
     }
   }
 
-  private async chooseModel(acpId: string, r: Json, model: string, effort: string | undefined): Promise<string | null> {
+  private async chooseModel(acpId: string, r: Json, model: string, effort: string | undefined, session?: Session): Promise<string | null> {
     let options: Json[] = r.configOptions ?? []
     const picker = options.find(isSelect('model'))
     if (!picker) {
       if (!r.models) throw new Error(`${this.displayName} does not let clients choose a model`)
-      if (r.models.currentModelId !== model) await this.request('session/set_model', { sessionId: acpId, modelId: model })
+      if (r.models.currentModelId !== model) await this.request('session/set_model', { sessionId: acpId, modelId: model }, session)
       return null
     }
-    if (picker.currentValue !== model) options = await this.setOption(acpId, picker.id, model)
+    if (picker.currentValue !== model) options = await this.setOption(acpId, picker.id, model, session)
     const now = options.find(isSelect('model'))?.currentValue
     if (now !== model) throw new Error(`${this.displayName} chose ${now ?? 'no model'} instead of ${model}`)
     const level = options.find(isSelect('thought_level'))
     if (effort && level && level.currentValue !== effort) {
-      if (choicesOf(level).some((c) => c.value === effort)) await this.setOption(acpId, level.id, effort)
+      if (choicesOf(level).some((c) => c.value === effort)) await this.setOption(acpId, level.id, effort, session)
       else this.log(`${this.id}: ${model} has no thought level ${effort}; keeping ${level.currentValue}`)
     }
     return picker.id
@@ -333,11 +346,16 @@ export class AcpProvider implements Provider {
 
 
   async spawnSession(session: Session, req: SpawnRequest): Promise<string> {
+    this.opening.add(session)
+    try { return await this.spawn(session, req) } finally { this.opening.delete(session) }
+  }
+
+  private async spawn(session: Session, req: SpawnRequest): Promise<string> {
     await this.start()
-    const r = await this.newSession(req.cwd)
+    const r = await this.newSession(req.cwd, session)
     let modelOption: string | null
     try {
-      modelOption = await this.chooseModel(r.sessionId, r, req.model, req.effort)
+      modelOption = await this.chooseModel(r.sessionId, r, req.model, req.effort, session)
     } catch (e) {
       this.dropSession(r.sessionId)
       throw e
@@ -355,45 +373,76 @@ export class AcpProvider implements Provider {
       drifted: false,
       dead: false,
       turn: null,
-      queue: [],
       grants: new Set(),
     }
     this.states.set(id, st)
     this.byAcpId.set(st.acpId, st)
+    session.info.effort = req.effort ?? null
+    session.setNativeRef({ acpSessionId: st.acpId, canAsk: st.canAsk })
+    session.acceptInput(req.prompt, 'started')
     this.runTurn(st, req.prompt)
     return id
   }
 
-  async sendInput(session: Session, text: string): Promise<void> {
+  async sendInput(session: Session, text: string): Promise<'started' | 'queued'> {
     const st = this.stateOf(session)
-    if (!st) return
-    if (st.dead) session.push({ type: 'session_failed', error: `${this.displayName} has restarted since this task began; start a new task` })
-    else if (st.turn) st.queue.push(text)
-    else this.runTurn(st, text)
+    if (!st || st.dead) throw new Error(`${this.displayName} can't reopen this session: the app has restarted since this task began`)
+    if (st.turn) { session.queueInput(this, text); return 'queued' }
+    this.runTurn(st, text)
+    return 'started'
   }
+
+  async attach(session: Session, ref: Json) {
+    this.opening.add(session)
+    try { await this.load(session, ref) } finally { this.opening.delete(session) }
+  }
+
+  private async load(session: Session, ref: Json) {
+    await this.start()
+    if (!this.agentCaps.loadSession) throw new Error(`${this.displayName} can't reopen this session: the agent does not advertise loadSession`)
+    if (!ref?.acpSessionId) throw new Error(`${this.displayName} can't reopen this session: no native session id was saved`)
+    const r = await this.request('session/load', { sessionId: ref.acpSessionId, cwd: session.info.cwd, mcpServers: [] }, session)
+    const modelOption = await this.chooseModel(ref.acpSessionId, r, session.info.model, session.info.effort ?? undefined, session)
+    const st: State = { session, acpId: ref.acpSessionId, cwd: session.info.cwd, model: session.info.model, modelOption, canAsk: !!ref.canAsk, intro: null, drifted: false, dead: false, turn: null, grants: new Set() }
+    this.states.set(session.info.id, st)
+    this.byAcpId.set(st.acpId, st)
+  }
+
+  // The app server is shared, so only force it down when no other session has a turn running.
+  kill(session: Session) {
+    const busy = [...this.states.entries()].some(([id, st]) => id !== session.info.id && st.turn)
+    return !busy && ![...this.opening].some((s) => s !== session) && !this.discovering ? this.proc?.kill('SIGKILL') ?? false : false
+  }
+
+  isBusy(session: Session) { return this.opening.has(session) || !!this.stateOf(session)?.turn }
 
   async interrupt(session: Session): Promise<void> {
     const st = this.stateOf(session)
     if (!st) return
-    st.queue = []
     this.cancelTurn(st)
   }
 
   dispose() {
+    for (const st of this.states.values()) st.session.dropInputs()
     this.proc?.kill()
   }
 
   disposeSession(session: Session) {
+    session.dropInputs()
     const st = this.stateOf(session)
-    if (!st) return
-    if (!st.dead) {
-      st.queue = []
+    if (st && !st.dead) {
       this.cancelTurn(st)
       this.dropPending(session)
       this.dropSession(st.acpId, true)
+      st.turn = null
+      st.dead = true
+      this.states.delete(session.info.id)
+      if (this.byAcpId.get(st.acpId) === st) this.byAcpId.delete(st.acpId)
     }
-    this.states.delete(session.info.id)
-    if (this.byAcpId.get(st.acpId) === st) this.byAcpId.delete(st.acpId)
+    for (const [id, request] of this.requests) if (request.session === session) {
+      this.requests.delete(id)
+      request.reject(new Error(`${this.displayName} session stopped`))
+    }
   }
 
   private stateOf(session: Session): State | undefined {
@@ -401,7 +450,7 @@ export class AcpProvider implements Provider {
   }
 
   private runTurn(st: State, text: string) {
-    const turn: Turn = { id: `acp_${randomUUID()}`, cancelled: false, wrongModel: null, chunk: null, items: 0, finalText: '', tools: new Map(), lastUsed: null }
+    const turn: Turn = { id: `acp_${randomUUID()}`, cancelled: false, wrongModel: null, chunk: null, items: 0, finalText: '', tools: new Map(), lastUsed: null, denied: null }
     st.turn = turn
     st.session.push({ type: 'turn_started', turnId: turn.id })
     // ACP has no system prompt, so prepend instructions to the first message.
@@ -409,11 +458,11 @@ export class AcpProvider implements Provider {
     st.intro = null
     const go = async () => {
       if (st.drifted && st.modelOption) {
-        const now = (await this.setOption(st.acpId, st.modelOption, st.model)).find(isSelect('model'))?.currentValue
+        const now = (await this.setOption(st.acpId, st.modelOption, st.model, st.session)).find(isSelect('model'))?.currentValue
         if (now !== st.model) throw new Error(`${this.displayName} kept ${now} instead of ${st.model}`)
         st.drifted = false
       }
-      return this.request('session/prompt', { sessionId: st.acpId, prompt })
+      return this.request('session/prompt', { sessionId: st.acpId, prompt }, st.session)
     }
     go().then(
       (r) => this.endTurn(st, turn, r ?? {}, null),
@@ -455,13 +504,13 @@ export class AcpProvider implements Provider {
       : turn.cancelled || stop === 'cancelled' ? 'interrupted'
       : stop === 'end_turn' ? 'completed'
       : 'failed'
+    const denied = stop !== 'end_turn' && !turn.cancelled && !turn.wrongModel && turn.denied && Date.now() - turn.denied.at <= 2000 ? turn.denied : null
+    const reason: EndReason = turn.wrongModel ? 'wrong_model' : turn.cancelled || stop === 'cancelled' ? 'interrupted' : denied ? 'permission_denied' : error ? 'error' : ({ end_turn: 'end_turn', max_tokens: 'max_tokens', max_turn_requests: 'max_requests', refusal: 'refusal' } as Record<string, EndReason>)[stop] ?? 'error'
     const why = turn.wrongModel
       ? `${this.displayName} switched to ${turn.wrongModel} instead of ${st.model}; stopped it`
-      : (error ?? (status === 'failed' ? (STOPS[stop] ?? `it stopped (${stop})`) : null))
+      : (denied?.reason ?? error ?? (status === 'failed' ? (STOPS[stop] ?? `it stopped (${stop})`) : null))
     st.turn = null
-    st.session.push({ type: 'turn_completed', turnId: turn.id, status, finalText: turn.finalText, ...(why ? { error: why } : {}) })
-    const next = st.queue.shift()
-    if (next !== undefined) this.runTurn(st, next)
+    st.session.push({ type: 'turn_completed', turnId: turn.id, status, reason, finalText: turn.finalText, ...(why ? { error: why } : {}) })
   }
 
 
@@ -506,6 +555,7 @@ export class AcpProvider implements Provider {
     if (open && (open.kind !== kind || (messageId && open.messageId && messageId !== open.messageId))) this.flush(st, turn)
     turn.chunk ??= { kind, messageId, text: '' }
     if (u.content?.type === 'text') turn.chunk.text += String(u.content.text ?? '')
+    st.session.live = { activity: kind === 'text' ? 'responding' : 'thinking', partialText: kind === 'text' ? turn.chunk.text : turn.finalText || null, updatedAt: Date.now() }
   }
 
   private flush(st: State, turn: Turn) {
@@ -582,6 +632,7 @@ export class AcpProvider implements Provider {
       this.log(`${this.id} asked permission for an unknown session ${p.sessionId}; refusing`)
       return this.reply(rpcId, { outcome: { outcome: 'cancelled' } })
     }
+    if (st.turn?.cancelled) return this.reply(rpcId, { outcome: { outcome: 'cancelled' } })
     if (!st.canAsk) return this.reply(rpcId, { outcome: permissionOutcome(options, 'deny') })
     // Merge known inputs because permission requests can omit tool details.
     const call = p.toolCall ?? {}
@@ -609,6 +660,7 @@ export class AcpProvider implements Provider {
       this.log(`${this.id}: declined a ${p.mode ?? 'modeless'} elicitation${st && !st.dead ? '' : ' for an unknown session'}`)
       return this.reply(rpcId, { action: 'decline' })
     }
+    if (st.turn?.cancelled) return this.reply(rpcId, { action: 'cancel' })
     const yesNo = confirmShape(fields)
     if (yesNo) return this.onConfirm(st, rpcId, p, yesNo)
     if (!st.canAsk) return this.reply(rpcId, { action: 'decline' })
@@ -652,6 +704,10 @@ export class AcpProvider implements Provider {
     if (decision === 'allow_session') this.stateOf(session)?.grants.add(p.grantKey)
     if (p.kind === 'permission') this.reply(p.rpcId, { outcome: permissionOutcome(p.options, decision) })
     else this.reply(p.rpcId, { action: 'accept', content: { [p.field]: decision === 'deny' ? p.no : p.yes } })
+    if (decision === 'deny') {
+      const turn = this.stateOf(session)?.turn
+      if (turn) turn.denied = { at: Date.now(), reason: reason || 'The user denied permission.' }
+    }
     if (decision === 'deny' && reason) this.log(`${this.id}: denied ${approvalId}; ACP has no place for the reason: ${reason}`)
     session.push({ type: 'approval_resolved', approvalId, decision })
     return true
@@ -668,7 +724,7 @@ export class AcpProvider implements Provider {
     const content = defer ? null : formContent(p.schema, answers)
     this.reply(p.rpcId, content ? { action: 'accept', content } : { action: 'decline' })
     session.push({ type: 'question_answered', questionId, how: defer ? 'deferred' : 'answered' })
-    if (defer) await this.interrupt(session)
+    if (defer) void session.stop(this, 'host', { preserveQueue: true }).catch(() => {})
     return true
   }
 }
