@@ -41,7 +41,7 @@ import { Store } from './store.ts'
 import { killOwnedGroups } from './process.ts'
 import { Session } from './session.ts'
 import { buildAgents, describe, nameTable, selectModels, type AgentDef, type HarnessModel } from './registry.ts'
-import { CACHE, CONFIG, DATA_DIR, LOCK, LOG, RUN_DIR, SOCKET, VERSION, canonical, configKey, loadConfig, log, providerEnv, takeLock, type Config } from './config.ts'
+import { CACHE, CONFIG, DATA_DIR, DATA_LOCK, LOCK, LOG, RUN_DIR, SOCKET, VERSION, canonical, configKey, loadConfig, log, providerEnv, takeLock, type Config } from './config.ts'
 import { LEASE_TTL_MS, SessionTable } from './leases.ts'
 import type { Provider, ProviderFactory } from './provider.ts'
 import { PROVIDERS } from './providers/index.ts'
@@ -129,7 +129,6 @@ function serve() {
   }
   fs.mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 })
   fs.chmodSync(DATA_DIR, 0o700)
-  const dataLock = path.join(DATA_DIR, 'daemon.lock')
   const locks = [LOCK]
   process.on('exit', () => {
     try {
@@ -137,8 +136,8 @@ function serve() {
     } catch {}
   })
 
-  if (!takeLock(dataLock)) { log(`another bitfrostd owns ${DATA_DIR}; pid ${process.pid} exits`); process.exit(0) }
-  locks.push(dataLock)
+  if (!takeLock(DATA_LOCK)) { log(`another bitfrostd owns ${DATA_DIR}; pid ${process.pid} exits`); process.exit(0) }
+  locks.push(DATA_LOCK)
 
   // Keep the last valid config while edits are invalid; refuse new leases.
   let lastGood: Config | null = null
@@ -593,11 +592,15 @@ function setup(id: string | undefined) {
 
 // Returns why the helper is still up, or null once it's gone.
 async function stop(): Promise<string | null> {
+  const pid = (await health())?.pid
   const r = await call('POST', '/shutdown', 3000)
   if (!r) return null
   if (r.status !== 200) return r.body?.error ?? `HTTP ${r.status}`
-  for (let i = 0; i < 50 && (await health()); i++) await new Promise((res) => setTimeout(res, 100))
-  return (await health()) ? 'it did not exit' : null
+  // It stops answering before it exits, and a new helper can't start until it lets go of its locks.
+  const holds = (lock: string) => { try { return fs.readFileSync(lock, 'utf8') === String(pid) } catch { return false } }
+  const up = async () => (Number.isSafeInteger(pid) ? holds(LOCK) || holds(DATA_LOCK) : !!(await health()))
+  for (let i = 0; i < 100 && (await up()); i++) await new Promise((res) => setTimeout(res, 100))
+  return (await up()) ? 'it did not exit' : null
 }
 
 async function restart() {

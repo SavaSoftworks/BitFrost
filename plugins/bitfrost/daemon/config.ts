@@ -22,6 +22,7 @@ export const DATA_DIR = process.env.BITFROST_DATA_DIR || (process.platform === '
 export const SOCKET = path.join(RUN_DIR, 'bitfrostd.sock')
 export const LOG = path.join(RUN_DIR, 'bitfrostd.log')
 export const LOCK = path.join(RUN_DIR, 'bitfrostd.lock')
+export const DATA_LOCK = path.join(DATA_DIR, 'daemon.lock')
 export const CACHE = path.join(process.env.XDG_CACHE_HOME ?? path.join(HOME, '.cache'), 'bitfrost', 'agents.json')
 export const CONFIG = path.join(process.env.XDG_CONFIG_HOME ?? path.join(HOME, '.config'), 'bitfrost', 'config.json')
 export const VERSION = JSON.parse(fs.readFileSync(path.join(HERE, '..', '.claude-plugin', 'plugin.json'), 'utf8')).version as string
