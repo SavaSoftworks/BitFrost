@@ -300,7 +300,7 @@ TTY=
 if [ -n "$TTY" ] && [ -z "${NO_COLOR:-}" ]; then
   B=$(printf '\033[1m') D=$(printf '\033[2m') G=$(printf '\033[32m') Y=$(printf '\033[33m') C=$(printf '\033[1;34m') R=$(printf '\033[1;31m') N=$(printf '\033[0m')
 else
-  B= D= G= Y= C= R= N=
+  B='' D='' G='' Y='' C='' R='' N=''
 fi
 short() { case $1 in "$HOME" | "$HOME"/*) printf '~%s' "${1#"$HOME"}" ;; *) printf '%s' "$1" ;; esac; }
 header() {
@@ -353,6 +353,14 @@ spin() {
   printf '\r\033[2K\033[?25h'
 }
 
+# Waits for the background step and returns its status.
+finish_job() {
+  rc=0
+  wait "$job" || rc=$?
+  job=
+  return "$rc"
+}
+
 # Runs a slow step behind a spinner. Its output lands in $tmp/log for the error.
 task() {
   label=$1 detail=$2
@@ -360,7 +368,7 @@ task() {
   "$@" >"$tmp/log" 2>&1 &
   job=$!
   spin "$job" "$label" "$detail"
-  wait "$job" && job= || { job=; return 1; }
+  finish_job
 }
 
 # Downloads URL $1 to file $2, showing how much has arrived.
@@ -370,7 +378,7 @@ fetch() {
   curl -fsSL -o "$2" "$1" >"$tmp/log" 2>&1 &
   job=$!
   spin "$job" "Downloading" "${2##*/}" "$2" "$total"
-  wait "$job" && job= || { job=; return 1; }
+  finish_job
 }
 
 main "$@"
