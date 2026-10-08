@@ -37,6 +37,8 @@ export type ZCodeSpawn = SpawnRequest
 const FILE_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'ApplyPatch', 'NotebookEdit'])
 // ZCode marks todo tools as having side effects, though they only update run bookkeeping.
 const HARMLESS_TOOLS = new Set(['TodoWrite', 'TodoRead'])
+// No nested subagents or runs scheduled outside BitFrost.
+const DISALLOWED_TOOLS = new Set(['Agent', 'CreateWorkflow', 'AmendWorkflow', 'CronCreate', 'OffPeakCreate'])
 
 type Pending =
   | { kind: 'approval'; session: Session; grantKey: string; resolve: (reply: Json) => void }
@@ -50,6 +52,7 @@ type Turn = {
   finalText: string
   text: Map<string, string>
   reasoning: Map<string, string>
+  builtInMessages: Set<string>
   tools: Map<string, { name: string; input: unknown }>
   stderr: string
   failed: boolean
@@ -183,6 +186,7 @@ export class ZCodeAdapter implements Provider {
     if (!st.turn || st.turn.interrupted) return deny('Stopped.')
     const tool = String(input.tool_name ?? '')
     const args = input.tool_input ?? {}
+    if (DISALLOWED_TOOLS.has(tool)) return deny(`BitFrost subagents cannot use ${tool}: nested subagents, multi-agent workflows, and runs scheduled outside BitFrost are disabled.`)
 
     if (tool === 'AskUserQuestion') {
       const questions: Question[] = (args.questions ?? []).map((q: Json, i: number) => ({
@@ -295,7 +299,7 @@ export class ZCodeAdapter implements Provider {
     for (const suffix of ['', '-wal', '-shm']) {
       try { fs.chmodSync(this.config.sessionDb + suffix, 0o600) } catch {}
     }
-    const args = [this.config.cli, '-p', prompt, '--output-format', 'stream-json', '--cwd', st.cwd, '--mode', st.mode]
+    const args = [this.config.cli, '-p', prompt, '--disallowed-tools', [...DISALLOWED_TOOLS].join(','), '--output-format', 'stream-json', '--cwd', st.cwd, '--mode', st.mode]
     if (st.zcodeSessionId) args.push('--resume', st.zcodeSessionId)
     const turnId = `zt_${randomUUID()}`
     const proc = spawn(this.config.electron, args, {
@@ -315,7 +319,7 @@ export class ZCodeAdapter implements Provider {
         BITFROST_NODE: process.execPath,
       },
     })
-    const turn: Turn = { proc, turnId, interrupted: false, wrongModel: null, finalText: '', text: new Map(), reasoning: new Map(), tools: new Map(), stderr: '', failed: false, failure: null }
+    const turn: Turn = { proc, turnId, interrupted: false, wrongModel: null, finalText: '', text: new Map(), reasoning: new Map(), builtInMessages: new Set(), tools: new Map(), stderr: '', failed: false, failure: null }
     st.turn = turn
     if (proc.pid) {
       const identity = processIdentity(proc.pid, turnId)
@@ -406,8 +410,10 @@ export class ZCodeAdapter implements Provider {
         else if (p.kind === 'text_end' || p.kind === 'finish') {
           const text = (turn.text.get(id) ?? '').trim()
           turn.text.delete(id)
-          if (text) turn.finalText = text
-          if (text) emit({ type: 'text', itemId: `${id}:${ev.seq}`, text })
+          if (text && !this.emitBuiltInText(turn, text, `${id}:${ev.seq}`, emit)) {
+            turn.finalText = text
+            emit({ type: 'text', itemId: `${id}:${ev.seq}`, text })
+          }
         } else if (p.kind === 'reasoning_end') {
           const text = (turn.reasoning.get(id) ?? '').trim()
           turn.reasoning.delete(id)
@@ -450,13 +456,57 @@ export class ZCodeAdapter implements Provider {
         return
       case 'turn.completed':
         if (!turn.failed) turn.failure = null
-        turn.finalText = p.response ?? turn.finalText
+        if (p.response != null && !this.emitBuiltInText(turn, p.response, `${turn.turnId}:completed`, emit, true)) turn.finalText = p.response
         return
       case 'result':
-        turn.finalText = ev.response ?? turn.finalText
+        if (ev.response != null && !this.emitBuiltInText(turn, ev.response, `${turn.turnId}:result`, emit, true)) turn.finalText = ev.response
         return
     }
   }
+
+  // snapshot: a completion event, which repeats what was streamed, so it only sets the final text once blocks were shown.
+  private emitBuiltInText(turn: Turn, text: string, itemId: string, emit: (b: AgentEventBody) => void, snapshot = false): boolean {
+    if (typeof text !== 'string') return false
+    const parts = splitBuiltInTools(text)
+    if (!parts) return false
+    const last = parts.at(-1)
+    turn.finalText = last?.kind === 'text' ? last.text : ''
+    const key = text.trim()
+    if (turn.builtInMessages.has(key) || (snapshot && turn.builtInMessages.size)) return true
+    turn.builtInMessages.add(key)
+    parts.forEach((part, i) => {
+      const id = `${itemId}:${i}`
+      if (part.kind === 'text') emit({ type: 'text', itemId: id, text: part.text })
+      else {
+        emit({ type: 'tool_started', itemId: id, name: part.name, input: part.input })
+        emit({ type: 'tool_completed', itemId: id, name: part.name, input: part.input, ok: true, output: part.output })
+      }
+    })
+    return true
+  }
+}
+
+type BuiltInPart = { kind: 'text'; text: string } | { kind: 'tool'; name: string; input: unknown; output: string }
+
+function splitBuiltInTools(text: string): BuiltInPart[] | null {
+  const block = /\*\*(?:🌐[ \t]*)?Z\.ai Built-in Tool:[ \t]*([\w.-]+)\*\*[ \t]*\r?\n[ \t\r\n]*\*\*Input:\*\*[ \t]*\r?\n[ \t]*```(?:json)?[ \t]*\r?\n([\s\S]*?)\r?\n[ \t]*```(?=[ \t]*(?:\r?\n|$))/g
+  const parts: BuiltInPart[] = []
+  let offset = 0
+  for (const match of text.matchAll(block)) {
+    if (match.index < offset) continue
+    const before = text.slice(offset, match.index).trim()
+    if (before) parts.push({ kind: 'text', text: before })
+    const end = match.index + match[0].length
+    const tail = text.slice(end).match(/^[ \t]*(?:\r?\n[ \t]*)*(?:\*Executing on server\.{3}\*[ \t]*(?:\r?\n[ \t]*)*)?(?:\*\*Output:\*\*[ \t]*(?:\r?\n[ \t]*)*)?(\*\*[\w.-]+_result_summary:\*\*[^\r\n]*)?/)
+    let input: unknown = match[2]
+    try { input = JSON.parse(match[2]!) } catch {}
+    parts.push({ kind: 'tool', name: match[1]!, input, output: tail?.[1] ?? '' })
+    offset = end + (tail?.[0].length ?? 0)
+  }
+  if (!parts.length) return null
+  const after = text.slice(offset).trim()
+  if (after) parts.push({ kind: 'text', text: after })
+  return parts
 }
 
 function killGroup(proc: ChildProcess, signal: NodeJS.Signals) {
