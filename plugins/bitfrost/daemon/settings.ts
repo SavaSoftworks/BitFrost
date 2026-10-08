@@ -35,14 +35,17 @@ function save(file: string, key: string, value: Answers): string | null {
   const raw = readRaw(file)
   if (typeof raw === 'string') return raw
   raw[key] = value
-  fs.mkdirSync(path.dirname(file), { recursive: true })
-  const tmp = `${file}.${process.pid}.tmp`
+  // Write where a symlink points, so a config kept in a dotfiles folder stays linked.
+  let target = file
+  try { target = fs.realpathSync(file) } catch {}
+  fs.mkdirSync(path.dirname(target), { recursive: true })
+  const tmp = `${target}.${process.pid}.tmp`
   let mode = 0o600
-  try { mode = fs.statSync(file).mode & 0o777 } catch {}
+  try { mode = fs.statSync(target).mode & 0o777 } catch {}
   fs.writeFileSync(tmp, JSON.stringify(raw, null, 2) + '\n', { mode })
   // The umask narrows a new file's mode, so set the old one again.
   fs.chmodSync(tmp, mode)
-  fs.renameSync(tmp, file)
+  fs.renameSync(tmp, target)
   return null
 }
 

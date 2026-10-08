@@ -3,7 +3,7 @@
 
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { Cancelled, choose, confirm } from '../prompt.ts'
+import { Cancelled, choose, confirm, openTerminal } from '../prompt.ts'
 import type { Question } from '../features.ts'
 import { fakeTerminal } from './fake-terminal.ts'
 
@@ -109,4 +109,12 @@ test('choose keeps an arrow key that arrives split across reads', { timeout: 200
     })
   })
   assert.equal(await picked, 'opus')
+})
+
+test('openTerminal asks nothing when output is not a terminal', (t) => {
+  // A piped stdout has no isTTY at all, so set it and put back what was there.
+  const had = Object.getOwnPropertyDescriptor(process.stdout, 'isTTY')
+  Object.defineProperty(process.stdout, 'isTTY', { value: false, configurable: true })
+  t.after(() => (had ? Object.defineProperty(process.stdout, 'isTTY', had) : delete (process.stdout as any).isTTY))
+  assert.equal(openTerminal(), null)
 })

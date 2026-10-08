@@ -456,23 +456,23 @@ export class ZCodeAdapter implements Provider {
         return
       case 'turn.completed':
         if (!turn.failed) turn.failure = null
-        if (p.response != null && !this.emitBuiltInText(turn, p.response, `${turn.turnId}:completed`, emit)) turn.finalText = p.response
+        if (p.response != null && !this.emitBuiltInText(turn, p.response, `${turn.turnId}:completed`, emit, true)) turn.finalText = p.response
         return
       case 'result':
-        if (ev.response != null && !this.emitBuiltInText(turn, ev.response, `${turn.turnId}:result`, emit)) turn.finalText = ev.response
+        if (ev.response != null && !this.emitBuiltInText(turn, ev.response, `${turn.turnId}:result`, emit, true)) turn.finalText = ev.response
         return
     }
   }
 
-  private emitBuiltInText(turn: Turn, text: string, itemId: string, emit: (b: AgentEventBody) => void): boolean {
+  // snapshot: a completion event, which repeats what was streamed, so it only sets the final text once blocks were shown.
+  private emitBuiltInText(turn: Turn, text: string, itemId: string, emit: (b: AgentEventBody) => void, snapshot = false): boolean {
     if (typeof text !== 'string') return false
     const parts = splitBuiltInTools(text)
     if (!parts) return false
     const last = parts.at(-1)
     turn.finalText = last?.kind === 'text' ? last.text : ''
-    // Completion snapshots repeat the streamed assistant message.
     const key = text.trim()
-    if (turn.builtInMessages.has(key)) return true
+    if (turn.builtInMessages.has(key) || (snapshot && turn.builtInMessages.size)) return true
     turn.builtInMessages.add(key)
     parts.forEach((part, i) => {
       const id = `${itemId}:${i}`

@@ -211,3 +211,13 @@ test('saving keeps a group-writable mode the umask would narrow', { timeout: 200
   assert.equal(await setupFeatures({ file: config.file, terminal: () => fake.terminal }), 0)
   assert.equal(fs.statSync(config.file).mode & 0o777, 0o660)
 })
+
+test('saving through a symlinked config writes the linked file and keeps the link', { timeout: 2000 }, async (t) => {
+  const config = tempConfig(t, { allowedProfiles: ['/profile'] })
+  const link = path.join(config.dir, 'linked.json')
+  fs.symlinkSync(config.file, link)
+  const fake = fakeTerminal(t, ['n\r'])
+  assert.equal(await setupFeatures({ file: link, terminal: () => fake.terminal }), 0)
+  assert.ok(fs.lstatSync(link).isSymbolicLink())
+  assert.deepEqual(config.read(), { allowedProfiles: ['/profile'], handback: { enabled: false, effort: 'low' } })
+})

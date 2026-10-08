@@ -330,6 +330,22 @@ test('an invalid config.json refuses leases with 503 and shows in /health', asyn
   leaseId = await newLease('host-1')
 })
 
+
+test('/health reports the handback setting, and none while the config is invalid', async () => {
+  writeConfig({ ...goodConfig(), handback: { enabled: true, model: 'sonnet', effort: 'low' } })
+  const on = (await call('GET', '/health')).body
+  assert.deepStrictEqual(on.handback, { model: 'claude-sonnet-5-5', effort: 'low' })
+  assert.deepStrictEqual(on.newSettings, [])
+  // Leases keep the last good config, but an opt-in setting reads as off.
+  writeConfig('{"handback": ')
+  const broken = (await call('GET', '/health')).body
+  assert.ok(broken.configError)
+  assert.strictEqual(broken.handback, null)
+  writeConfig(goodConfig())
+  const unset = (await call('GET', '/health')).body
+  assert.strictEqual(unset.handback, null)
+  assert.deepStrictEqual(unset.newSettings, ['handback'])
+})
 test('bad request bodies get 400, and oversized ones 413', async () => {
   const bad = await call('POST', '/leases', '{not json')
   assert.strictEqual(bad.status, 400)

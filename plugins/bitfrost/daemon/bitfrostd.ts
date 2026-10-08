@@ -362,7 +362,8 @@ function serve() {
     try {
       if (req.method === 'GET' && url.pathname === '/health') {
         const config = readConfig()
-        return json(res, 200, { ok: true, pid: process.pid, version: VERSION, store: { degraded: store.degraded, error: store.error }, busy: table.running().length > 0, configError: config.error, handback: config.handback ?? null, newSettings: config.newSettings ?? [] })
+        // A broken config keeps the last good one for leases, but handback is opt-in, so it reads as off.
+        return json(res, 200, { ok: true, pid: process.pid, version: VERSION, store: { degraded: store.degraded, error: store.error }, busy: table.running().length > 0, configError: config.error, handback: config.error ? null : config.handback ?? null, newSettings: config.newSettings ?? [] })
       }
       if (req.method === 'GET' && url.pathname === '/status') return json(res, 200, status())
       if (req.method === 'POST' && url.pathname === '/shutdown') {

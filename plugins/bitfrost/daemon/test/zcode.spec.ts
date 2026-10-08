@@ -454,3 +454,19 @@ test('a ZCode tool without a name is stored safely and a restart before a native
   await until('input consumed', () => early.session.events.some((e) => e.type === 'input_consumed' && e.inputId === input.inputId))
   assert.equal(early.session.events.some((e) => e.type === 'session_failed'), false)
 })
+
+test('ZCode does not show built-in parts twice when a completion snapshot differs from the stream', async (t) => {
+  const snapshot = builtInResponse.replace('\n' + ' '.repeat(48), '\n' + ' '.repeat(47))
+  assert.notEqual(snapshot, builtInResponse)
+  const run = fake(t, { first: [native,
+    { type: 'model.streaming', payload: { kind: 'text_delta', assistantMessageId: 'a', delta: builtInResponse } },
+    { type: 'model.streaming', seq: 3, payload: { kind: 'text_end', assistantMessageId: 'a' } },
+    { type: 'turn.completed', payload: { response: snapshot } },
+    { type: 'result', response: snapshot },
+  ] })
+  await run.adapter.spawnSession(run.session, { model: 'GLM-test', cwd: run.dir, prompt: 'hello' })
+  await until('completion', () => run.session.events.some((e) => e.type === 'turn_completed'))
+  const events: any[] = run.session.events.filter((e) => !['user_input', 'input_consumed'].includes(e.type))
+  assert.deepEqual(events.map((e) => e.type), ['turn_started', 'text', 'tool_started', 'tool_completed', 'text', 'turn_completed'])
+  assert.equal(events.at(-1).finalText, builtInAnswer)
+})

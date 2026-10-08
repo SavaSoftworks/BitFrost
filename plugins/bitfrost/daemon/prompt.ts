@@ -9,27 +9,30 @@
 import fs from 'node:fs'
 import tty from 'node:tty'
 import type { Option, Question } from './features.ts'
+import { bold, dim, paint } from './ui.ts'
 
 export type Terminal = { input: NodeJS.ReadableStream & { setRawMode?: (on: boolean) => unknown }; output: NodeJS.WritableStream; close: () => void }
 
-const COLOR = !process.env.NO_COLOR
-const paint = (code: string) => (text: string) => (COLOR ? `\x1b[${code}m${text}\x1b[0m` : text)
-const bold = paint('1'), dim = paint('2'), cyan = paint('36')
+const cyan = paint('36')
 
-// The user's terminal, or null when there is none to ask on.
+// The user's terminal, or null when there is none to ask on. Output that isn't a terminal
+// means nobody is watching, as when an agent runs bitfrost update, so nothing is asked.
 export function openTerminal(): Terminal | null {
-  let fd: number
+  if (!process.stdout.isTTY) return null
+  // One descriptor per stream, since each stream closes its own.
+  const fds: number[] = []
   try {
-    fd = fs.openSync('/dev/tty', 'r+')
+    for (const flags of ['r', 'w']) fds.push(fs.openSync('/dev/tty', flags))
   } catch {
+    for (const fd of fds) fs.closeSync(fd)
     return null
   }
-  if (!tty.isatty(fd)) {
-    fs.closeSync(fd)
+  if (!fds.every((fd) => tty.isatty(fd))) {
+    for (const fd of fds) fs.closeSync(fd)
     return null
   }
-  const input = new tty.ReadStream(fd)
-  const output = new tty.WriteStream(fd)
+  const input = new tty.ReadStream(fds[0]!)
+  const output = new tty.WriteStream(fds[1]!)
   return {
     input,
     output,

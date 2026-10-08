@@ -146,7 +146,14 @@ main() {
   fi
 
   # The release just unpacked asks about its own new settings, so this script needs no list of them.
-  "$link" setup --new || settings_needed=1
+  # No terminal (3) or Ctrl+C (130) leaves them for later; anything else already said what went wrong.
+  code=0
+  "$link" setup --new || code=$?
+  case $code in
+    0) ;;
+    3 | 130) settings_needed=1 ;;
+    *) warn "Could not ask about new settings, so they stay off. Once that's fixed, run: bitfrost setup" ;;
+  esac
 
   # A same-version reinstall is not newer, so Claude would never restart the helper.
   if [ -n "$force" ] && [ "$previous" = "$version" ] && "$link" status >/dev/null 2>&1; then
