@@ -255,7 +255,7 @@ install_plugin() {
 
 # Where Claude Code keeps its copy of a user install of BitFrost, from its plugin list. Empty when there is none.
 user_copy() {
-  "$1" plugin list --json 2>/dev/null | tr -d '\n' | tr '{}' '\n\n' |
+  "$1" plugin list --json 2>/dev/null | tr -d '\n' | tr '{' '\n' | tr '}' '\n' |
     grep '"id": *"bitfrost@bitfrost"' | grep '"scope": *"user"' |
     sed -n 's/.*"installPath": *"\([^"]*\)".*/\1/p' | head -n 1
 }
