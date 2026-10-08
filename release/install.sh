@@ -27,6 +27,7 @@ main() {
   force=
   hooks_needed=
   restart_needed=
+  settings_needed=
   while [ $# -gt 0 ]; do
     case $1 in
       --version) [ $# -ge 2 ] || die "--version needs a value"; version=${2#v}; shift 2 ;;
@@ -144,6 +145,16 @@ main() {
     install_plugin
   fi
 
+  # The release just unpacked asks about its own new settings, so this script needs no list of them.
+  # No terminal (3) or Ctrl+C (130) leaves them for later; anything else already said what went wrong.
+  code=0
+  "$link" setup --new || code=$?
+  case $code in
+    0) ;;
+    3 | 130) settings_needed=1 ;;
+    *) warn "Could not ask about new settings, so they stay off. Once that's fixed, run: bitfrost setup" ;;
+  esac
+
   # A same-version reinstall is not newer, so Claude would never restart the helper.
   if [ -n "$force" ] && [ "$previous" = "$version" ] && "$link" status >/dev/null 2>&1; then
     if task "Helper" "restarting it" "$link" restart; then
@@ -176,6 +187,7 @@ main() {
   esac
   [ -z "$hooks_needed" ] || next=1
   [ -z "$restart_needed" ] || next=1
+  [ -z "$settings_needed" ] || next=1
   [ -n "$previous" ] || next=1
   [ -n "$next" ] || return 0
   echo
@@ -187,6 +199,10 @@ main() {
   if [ -n "$restart_needed" ]; then
     todo "The helper is busy, so it runs the old copy for now. Once no subagent runs:"
     cmd "bitfrost restart"
+  fi
+  if [ -n "$settings_needed" ]; then
+    todo "This version has new settings, off until you choose them. In a terminal, run:"
+    cmd "bitfrost setup"
   fi
   if [ -n "$hooks_needed" ]; then
     todo "Add this to the \"env\" block of $(short "$hooks_needed"):"
@@ -210,8 +226,24 @@ install_plugin() {
   # Claude's own messages only show when something fails.
   task "Claude Code plugin" "adding the marketplace" "$claude" plugin marketplace add "$DATA/current" ||
     die "claude plugin marketplace add failed: $(cat "$tmp/log")"
-  task "Claude Code plugin" "installing" "$claude" plugin install bitfrost@bitfrost --scope user ||
+  # Claude Code keeps its own copy per version, so new files under the same version need a fresh install.
+  # Only a user install is replaced, and only when its copy really differs (diff exits 1, not 2).
+  replaced=
+  copy=$(user_copy "$claude")
+  differs=0
+  [ -z "$copy" ] || [ ! -d "$copy" ] || diff -rq -x .in_use "$DATA/current/plugins/bitfrost" "$copy" >/dev/null 2>&1 || differs=$?
+  if [ "$differs" = 1 ]; then
+    if task "Claude Code plugin" "replacing its old copy" "$claude" plugin uninstall bitfrost@bitfrost --scope user --keep-data; then
+      replaced=1
+    else
+      warn "Could not replace the old plugin copy, so Claude Code may run older files: $(cat "$tmp/log")"
+    fi
+  fi
+  if ! task "Claude Code plugin" "installing" "$claude" plugin install bitfrost@bitfrost --scope user; then
+    [ -z "$replaced" ] || warn "The old plugin copy was removed. To add the plugin again, run:"
+    [ -z "$replaced" ] || cmd "claude plugin install bitfrost@bitfrost --scope user"
     die "claude plugin install failed: $(cat "$tmp/log")"
+  fi
   if [ -n "$previous" ] && [ "$previous" != "$version" ]; then
     task "Claude Code plugin" "updating" "$claude" plugin update bitfrost@bitfrost || true
   fi
@@ -219,6 +251,13 @@ install_plugin() {
 
   settings=${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json
   grep -q '"CLAUDE_CODE_ENABLE_FUNCTION_HOOKS" *: *"1"' "$settings" 2>/dev/null || hooks_needed=$settings
+}
+
+# Where Claude Code keeps its copy of a user install of BitFrost, from its plugin list. Empty when there is none.
+user_copy() {
+  "$1" plugin list --json 2>/dev/null | tr -d '\n' | tr '{' '\n' | tr '}' '\n' |
+    grep '"id": *"bitfrost@bitfrost"' | grep '"scope": *"user"' |
+    sed -n 's/.*"installPath": *"\([^"]*\)".*/\1/p' | head -n 1
 }
 
 find_claude() {

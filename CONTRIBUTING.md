@@ -13,7 +13,7 @@ Thanks for helping. Bug reports, fixes and support for more apps are all welcome
 |---|---|
 | `plugins/bitfrost/` | The Claude Code plugin. Installing it installs everything below. |
 | `plugins/bitfrost/hooks/register.js` | The plugin code. It starts the helper, adds the models as subagents, and plays each model's work into Claude's subagent view. |
-| `plugins/bitfrost/daemon/` | The helper, `bitfrostd`. `provider.ts` is what every provider implements, `providers/` has one file per app (`codex.ts`, `zcode.ts`, ...), and `registry.ts` picks the models and their short names. |
+| `plugins/bitfrost/daemon/` | The helper, `bitfrostd`. `provider.ts` is what every provider implements, `providers/` has one file per app (`codex.ts`, `zcode.ts`, ...), and `registry.ts` picks the models and their short names. `features.ts` holds the settings `bitfrost setup` asks about. |
 | `plugins/bitfrost/hooks/register.test.ts` | Tests for the plugin code against a fake helper, run by Claude Code's plugin test kit (`npm run test:plugin`). |
 | `plugins/bitfrost/daemon/test/` | Tests that replay recorded app output through each provider, and one that runs the helper itself against a fake Codex (`npm run test:daemon`). They are named `*.spec.ts` so the plugin test kit leaves them alone. `npm test` runs both suites. |
 | `plugins/bitfrost/bin/bitfrostd` | Starts the helper and finds a usable Node. The `bitfrost` command links to it. |
@@ -59,6 +59,14 @@ A provider is an app BitFrost can hand work to. Each one is a file in `plugins/b
 6. Set `vendor` if the app is one company's own. Apps that serve many companies' models (opencode) start with `optIn: true`, so they stay off until the user turns them on.
 7. Add a replay test: record the app's raw output with `BITFROST_RECORD_DIR=<dir>` set on the helper, keep a small run as a fixture under `daemon/test/fixtures/<provider>/`, and check the events it gives.
 8. Bump the plugin version. A running helper is only replaced by a newer version number.
+
+## Adding a setting
+
+A setting is something BitFrost asks about before it turns on, like official handback.
+
+1. Add a `Feature` to `FEATURES` in `plugins/bitfrost/daemon/features.ts`: an `id` (also the name in `bitfrost setup <id>`), the top-level `key` it owns in `config.json`, the `since` version, a `title`, and its `questions`. A question is a `confirm` or a `choice`, with optional `when` conditions, `options` as a static list or a function, and `defaults` for values that are never asked.
+2. Add the key to `TOP_KEYS` and validate its shape in `validateConfig`, both in `plugins/bitfrost/daemon/config.ts`.
+3. Nothing in `release/install.sh` changes: the installer runs the newly installed release's own questions (`bitfrost setup --new`), so it asks about new settings without knowing about them.
 
 ## Releases
 

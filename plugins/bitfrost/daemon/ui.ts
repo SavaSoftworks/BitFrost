@@ -8,7 +8,7 @@
 import os from 'node:os'
 
 const COLOR = process.stdout.isTTY && !process.env.NO_COLOR
-const paint = (code: string) => (text: string) => (COLOR ? `\x1b[${code}m${text}\x1b[0m` : text)
+export const paint = (code: string) => (text: string) => (COLOR ? `\x1b[${code}m${text}\x1b[0m` : text)
 export const bold = paint('1'), dim = paint('2'), green = paint('32'), yellow = paint('33'), blue = paint('1;34')
 const red = (text: string) => (process.stderr.isTTY && !process.env.NO_COLOR ? `\x1b[1;31m${text}\x1b[0m` : text)
 

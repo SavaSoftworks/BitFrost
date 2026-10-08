@@ -136,3 +136,75 @@ test('retention defaults, overrides and invalid shapes are checked', (t) => {
   for (const value of [[],{ eventsDays:-1 },{ messagesDays:'forever' }]) assert.ok(validateConfig({ retention:value }).errors.length)
   assert.deepEqual(validateConfig({ retention:{ eventsDays:0,messagesDays:180 } }).warnings,[])
 })
+
+test('handback accepts off/on settings, custom models, every effort and null without warnings', () => {
+  const settings: Record<string, unknown>[] = [{}, { enabled: false }, { enabled: true, model: 'sonnet' }, { enabled: true, model: 'custom-model-id' }]
+  for (const effort of ['low', 'medium', 'high', 'xhigh', 'max', null]) settings.push({ enabled: true, model: 'opus', effort })
+  for (const handback of settings) {
+    assert.deepEqual(validateConfig({ handback }, KNOWN), { errors: [], warnings: [] }, JSON.stringify(handback))
+  }
+  assert.deepEqual(validateConfig({ handback: { enabled: false }, typo: true }, KNOWN), { errors: [], warnings: ['unknown key typo'] })
+})
+
+test('handback rejects invalid objects, enabled/model types, missing enabled models and efforts', () => {
+  const cases: [unknown, RegExp][] = [
+    [null, /handback must be an object/], [[], /handback must be an object/], [true, /handback must be an object/],
+    [{ enabled: 'yes' }, /handback\.enabled must be true or false/], [{ enabled: null }, /handback\.enabled must be true or false/],
+    [{ model: '' }, /handback\.model must be a model name/], [{ model: 42 }, /handback\.model must be a model name/],
+    [{ model: null }, /handback\.model must be a model name/], [{ enabled: true }, /handback\.model is needed/],
+    [{ enabled: true, model: '' }, /handback\.model is needed/],
+    [{ effort: 'auto' }, /handback\.effort must be one of low, medium, high, xhigh, max/],
+    [{ effort: 1 }, /handback\.effort must be one of/], [{ effort: false }, /handback\.effort must be one of/],
+  ]
+  for (const [handback, expected] of cases) {
+    const checked = validateConfig({ handback }, KNOWN)
+    assert.match(checked.errors.join('; '), expected, JSON.stringify(handback))
+    assert.deepEqual(checked.warnings, [])
+  }
+})
+
+test('loadConfig resolves each handback family, passes custom ids through, and normalizes effort', (t) => {
+  const file = path.join(tempDir(t), 'config.json')
+  const models = [
+    ['haiku', 'claude-haiku-4-5-20251001'], ['sonnet', 'claude-sonnet-5-5'],
+    ['opus', 'claude-opus-5-5'], ['fable', 'claude-fable-5-1'],
+    ['custom-model-id', 'custom-model-id'], ['claude-sonnet-5-5', 'claude-sonnet-5-5'],
+  ]
+  for (const [model, resolved] of models) {
+    fs.writeFileSync(file, JSON.stringify({ handback: { enabled: true, model, effort: 'low' } }))
+    const cfg = loadConfig(file)
+    assert.equal(cfg.error, null)
+    assert.deepEqual(cfg.warnings, [])
+    assert.deepEqual(cfg.handback, { model: resolved, effort: 'low' })
+    assert.deepEqual(cfg.newSettings, [])
+  }
+  for (const effort of [undefined, null, 'medium', 'high', 'xhigh', 'max']) {
+    fs.writeFileSync(file, JSON.stringify({ handback: { enabled: true, model: 'sonnet', effort } }))
+    assert.deepEqual(loadConfig(file).handback, { model: 'claude-sonnet-5-5', effort: effort ?? null })
+  }
+})
+
+test('loadConfig reports pending handback only when its key is missing and config is valid', (t) => {
+  const file = path.join(tempDir(t), 'config.json')
+  assert.deepEqual(loadConfig(file).newSettings, ['handback'])
+  assert.equal(loadConfig(file).handback, null)
+  for (const handback of [undefined, {}, { enabled: false }, { enabled: false, model: 'opus', effort: 'max' }]) {
+    fs.writeFileSync(file, JSON.stringify({ handback }))
+    const cfg = loadConfig(file)
+    assert.equal(cfg.error, null)
+    assert.equal(cfg.handback, null)
+    assert.deepEqual(cfg.newSettings, handback === undefined ? ['handback'] : [])
+  }
+  for (const invalid of ['{"handback":', '{"handback":{"enabled":true}}', '{"providers":{"codex":{"enabled":"no"}}}']) {
+    fs.writeFileSync(file, invalid)
+    const cfg = loadConfig(file)
+    assert.ok(cfg.error?.startsWith(`${file} is invalid:`))
+    assert.equal(cfg.handback, null)
+    assert.deepEqual(cfg.newSettings, [])
+  }
+  fs.writeFileSync(file, '{"typo":true}')
+  const warned = loadConfig(file)
+  assert.equal(warned.error, null)
+  assert.deepEqual(warned.warnings, [`${file}: unknown key typo`])
+  assert.deepEqual(warned.newSettings, ['handback'])
+})
