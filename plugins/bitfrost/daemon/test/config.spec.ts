@@ -128,6 +128,25 @@ test('describe leaves out the alias sentence when a model has no aliases', () =>
 })
 
 
+test('a model through another app is offered, but its own app keeps the name and aliases', () => {
+  const m = (harness: string, provider: string, model: string, displayName: string) => ({ harness, harnessName: harness, provider, model, displayName, description: '', efforts: [], defaultEffort: null, isDefault: false })
+  const own = new Map([['zcode', 'Z.ai'], ['gemini', 'Google']])
+  // Listed first, as opencode and Oh My Pi come before Gemini CLI.
+  const agents = buildAgents([
+    m('opencode', 'Z.ai', 'opencode-go/glm-5.3', 'GLM-5.3'),
+    m('omp', 'Google', 'gemini-3-pro', 'Gemini 3 Pro'),
+    m('zcode', 'Z.ai', 'GLM-5.3', 'GLM-5.3'),
+    m('gemini', 'Google', 'gemini-3-pro', 'Gemini 3 Pro'),
+  ], own)
+  const [viaOpencode, viaOmp, zcode, gemini] = agents
+  assert.deepStrictEqual([viaOpencode.name, viaOmp.name, zcode.name, gemini.name], ['opencode-go-glm-5-3', 'gemini-3-pro-omp', 'glm-5-3', 'gemini-3-pro'])
+  assert.ok(zcode.aliases.includes('glm') && zcode.aliases.includes('glm5.3'), zcode.aliases.join())
+  assert.ok(gemini.aliases.includes('gemini pro') && gemini.aliases.includes('gemini3 pro'), gemini.aliases.join())
+  assert.deepStrictEqual([viaOpencode.aliases, viaOmp.aliases], [[], []])
+  const all = agents.flatMap((a) => a.aliases)
+  assert.strictEqual(new Set(all).size, all.length, 'no alias names two models')
+})
+
 test('retention defaults, overrides and invalid shapes are checked', (t) => {
   const file = path.join(tempDir(t),'config.json')
   assert.deepEqual(loadConfig(file).retention,{ eventsDays:30,messagesDays:180 })

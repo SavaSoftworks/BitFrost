@@ -7,12 +7,12 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { spawnSync } from 'node:child_process'
+import { execFile, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import type { ProviderEnv } from './provider.ts'
 import { PROVIDERS } from './providers/index.ts'
-import { claudeModelId, pendingFeatures } from './features.ts'
+import { EFFORTS, claudeModelId, pendingFeatures } from './features.ts'
 
 const HOME = os.homedir()
 const HERE = path.dirname(fileURLToPath(import.meta.url))
@@ -87,7 +87,6 @@ export function loadConfig(file = CONFIG): Config {
 }
 
 const TOP_KEYS = new Set(['allowedProfiles', 'providers', 'codexBin', 'zcodeDir', 'retention', 'handback'])
-const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max']
 const isObject = (v: unknown) => typeof v === 'object' && v !== null && !Array.isArray(v)
 const isStrings = (v: unknown) => Array.isArray(v) && v.every((x) => typeof x === 'string')
 
@@ -124,7 +123,7 @@ export function validateConfig(cfg: unknown, known: string[] = PROVIDERS.map((p)
         continue
       }
       if ('enabled' in entry && typeof entry.enabled !== 'boolean') errors.push(`providers.${id}.enabled must be true or false`)
-      if ('models' in entry && !isStrings(entry.models)) errors.push(`providers.${id}.models must be a list of strings`)
+      for (const key of ['models', 'disabled']) if (key in entry && !isStrings(entry[key])) errors.push(`providers.${id}.${key} must be a list of strings`)
       for (const key of ['bin', 'dir']) if (key in entry && typeof entry[key] !== 'string') errors.push(`providers.${id}.${key} must be a string`)
     }
   }
@@ -151,8 +150,7 @@ export function providerEnv(config: Config, id: string): ProviderEnv {
   }
 }
 
-// Try the login shell too, since tools may only be on its PATH.
-export function resolveBinary(name: string): string | null {
+export function pathLookup(name: string): string | null {
   for (const dir of (process.env.PATH ?? '').split(':')) {
     const p = path.join(dir, name)
     try {
@@ -160,9 +158,27 @@ export function resolveBinary(name: string): string | null {
       return p
     } catch {}
   }
-  const r = spawnSync(process.env.SHELL ?? '/bin/sh', ['-lic', `command -v ${name}`], { encoding: 'utf8', timeout: 5000 })
-  const found = (r.stdout ?? '').trim().split('\n').pop()
+  return null
+}
+
+const shellAnswer = (out: string | null | undefined) => {
+  const found = (out ?? '').trim().split('\n').pop()
   return found && found.startsWith('/') ? found : null
+}
+
+// Try the login shell too, since tools may only be on its PATH.
+export function resolveBinary(name: string): string | null {
+  const found = pathLookup(name)
+  if (found) return found
+  const r = spawnSync(process.env.SHELL ?? '/bin/sh', ['-lic', `command -v ${name}`], { encoding: 'utf8', timeout: 5000 })
+  return shellAnswer(r.stdout)
+}
+
+// The same login shell lookup, without blocking the helper.
+export function loginShellLookup(name: string): Promise<string | null> {
+  return new Promise((resolve) => {
+    execFile(process.env.SHELL ?? '/bin/sh', ['-lic', `command -v ${name}`], { encoding: 'utf8', timeout: 5000 }, (_e, stdout) => resolve(shellAnswer(stdout)))
+  })
 }
 
 // Link a file containing the PID into place so concurrent starts cannot see an empty lock.

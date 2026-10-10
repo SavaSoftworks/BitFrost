@@ -5,49 +5,14 @@
 // Public License, version 3 only. It comes with no warranty. See LICENSE.
 
 // bitfrost setup for features: asks their questions and saves the answers in config.json.
-import fs from 'node:fs'
-import path from 'node:path'
 import { CONFIG } from './config.ts'
+import { readRaw, save } from './configedit.ts'
 import { askFeature, optionsFor, pendingFeatures, type Answers, type Feature } from './features.ts'
 import { asker, Cancelled, openTerminal, type Terminal } from './prompt.ts'
 import { done, fail, note, step, warn } from './ui.ts'
 
 // Exit code when there are questions but no terminal to ask them on. The installer lists them as a next step.
 export const NEED_TERMINAL = 3
-
-function readRaw(file: string): Record<string, any> | string {
-  let text: string
-  try {
-    text = fs.readFileSync(file, 'utf8')
-  } catch (e) {
-    return (e as NodeJS.ErrnoException).code === 'ENOENT' ? {} : (e as Error).message
-  }
-  try {
-    const c = JSON.parse(text)
-    return c && typeof c === 'object' && !Array.isArray(c) ? c : 'it must be a JSON object'
-  } catch (e) {
-    return (e as Error).message
-  }
-}
-
-// Reads the file again just before writing, so edits made while asking are kept.
-function save(file: string, key: string, value: Answers): string | null {
-  const raw = readRaw(file)
-  if (typeof raw === 'string') return raw
-  raw[key] = value
-  // Write where a symlink points, so a config kept in a dotfiles folder stays linked.
-  let target = file
-  try { target = fs.realpathSync(file) } catch {}
-  fs.mkdirSync(path.dirname(target), { recursive: true })
-  const tmp = `${target}.${process.pid}.tmp`
-  let mode = 0o600
-  try { mode = fs.statSync(target).mode & 0o777 } catch {}
-  fs.writeFileSync(tmp, JSON.stringify(raw, null, 2) + '\n', { mode })
-  // The umask narrows a new file's mode, so set the old one again.
-  fs.chmodSync(tmp, mode)
-  fs.renameSync(tmp, target)
-  return null
-}
 
 async function describe(f: Feature, answers: Answers, config: Record<string, any>): Promise<string> {
   const parts: string[] = []

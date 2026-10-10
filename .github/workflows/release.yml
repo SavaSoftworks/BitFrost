@@ -12,6 +12,8 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # Run it by hand on any branch to try the release builds; only a push to main releases.
+  workflow_dispatch:
 
 # PR runs cancel older ones. Main pushes never do, so no release gets dropped.
 concurrency:
@@ -34,9 +36,9 @@ jobs:
       - run: claude plugin validate plugins/bitfrost
       - run: npm test
       - name: Check the shell scripts
-        run: shellcheck release/install.sh release/build.sh plugins/bitfrost/bin/bitfrostd
+        run: shellcheck release/install.sh release/build.sh release/build-tui.sh release/check.sh plugins/bitfrost/bin/bitfrostd
       - name: Build the tarball
-        run: release/build.sh
+        run: release/build.sh --no-tui
       - name: Install from the tarball into a throwaway home
         run: |
           home=$(mktemp -d)
@@ -50,6 +52,10 @@ jobs:
         with:
           name: tarball
           path: dist/
+
+  # The TUI ships as one binary per platform, next to the tarball.
+  tui:
+    uses: ./.github/workflows/tui.yml
 
   # install.sh must also work with macOS's BSD tools.
   install-macos:
@@ -76,7 +82,7 @@ jobs:
           HOME=$home claude plugin list | grep -q 'bitfrost@bitfrost'
 
   release:
-    needs: [test, install-macos]
+    needs: [test, install-macos, tui]
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
     permissions:
@@ -104,6 +110,12 @@ jobs:
         with:
           name: tarball
           path: dist/
+      - uses: actions/download-artifact@v4
+        if: steps.check.outputs.new == 'true'
+        with:
+          pattern: tui-*
+          merge-multiple: true
+          path: dist/
       - name: Make the release
         if: steps.check.outputs.new == 'true'
         env:
@@ -116,4 +128,10 @@ jobs:
             --generate-notes \
             "dist/bitfrost-$VERSION.tar.gz" \
             "dist/bitfrost-$VERSION.tar.gz.sha256" \
-            dist/install.sh
+            dist/install.sh \
+            "dist/bitfrost-tui-$VERSION-linux-x64" \
+            "dist/bitfrost-tui-$VERSION-linux-x64.sha256" \
+            "dist/bitfrost-tui-$VERSION-linux-arm64" \
+            "dist/bitfrost-tui-$VERSION-linux-arm64.sha256" \
+            "dist/bitfrost-tui-$VERSION-darwin-universal" \
+            "dist/bitfrost-tui-$VERSION-darwin-universal.sha256"

@@ -51,8 +51,9 @@ export type AgentEventBody =
   // These tool names and inputs match Claude Code tools.
   | { type: 'tool_started'; itemId: string; name: string; input: unknown }
   | { type: 'tool_completed'; itemId: string; name: string; input: unknown; ok: boolean; output: string; display?: unknown }
-  // Usage covers one model request, never the sum over a turn.
-  | { type: 'usage'; inputTokens: number; outputTokens: number; cachedInputTokens: number }
+  // Context size stays separate from billing when an app supplies only prompt-wide totals.
+  | { type: 'usage'; inputTokens: number; outputTokens: number; cachedInputTokens: number; requestId?: string;
+      billing?: { inputTokens: number; outputTokens: number; cachedInputTokens: number; requests: number } }
   // Each plan replaces the previous plan in full.
   | { type: 'plan'; entries: { content: string; status: string }[] }
   | {

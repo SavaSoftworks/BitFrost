@@ -1,4 +1,4 @@
-# BitFrost FAQ
+# BitFrost Guide
 
 ## Setup
 
@@ -16,27 +16,36 @@ ELECTRON_RUN_AS_NODE=1 ZCODE_BUILTIN_PROVIDER_CONFIG_FILE=/opt/ZCode/resources/c
 
 Then run `bitfrost setup zcode` once. Without it, GLM can't ask you for permission and is refused instead.
 
-### opencode, Oh My Pi, Gemini CLI
+### opencode, Oh My Pi, Gemini CLI, Crush
 
-Sign in to the app first (`opencode auth login`, `omp`, or `gemini`). Then turn it on in `~/.config/bitfrost/config.json`:
+Sign in to the app first (`opencode auth login`, `omp`, `gemini`, or `crush login` and Crush's own provider setup). Then open the config screen (`bitfrost config`), turn the app on and pick its models. Or do the same by hand in `~/.config/bitfrost/config.json`:
 
 ```json
 {
   "providers": {
     "opencode": { "enabled": true, "models": ["deepseek/*"] },
     "omp": { "enabled": true, "models": ["deepseek/deepseek-v4-pro"] },
-    "gemini": { "enabled": true }
+    "gemini": { "enabled": true },
+    "crush": { "enabled": true, "models": ["opencode-go/glm-5.3"] }
   }
 }
 ```
 
-opencode and Oh My Pi need `models`: only the models listed there are offered. `*` works as a wildcard.
+opencode, Oh My Pi and Crush need `models`: only the models listed there are offered. `*` works as a wildcard. Gemini CLI offers all its models unless you name ones to skip.
 
-Anthropic models are never offered through these apps. Neither are GPT, GLM or Gemini models, which run through their own apps.
+Anthropic models are never offered through these apps. Any other model they list can be, GPT, GLM and Gemini included. If Codex, ZCode or Gemini CLI also offers that model, theirs keeps the short name, like glm, and the copy is named after its model id, like opencode-go-glm-5-3.
 
-### Using a Claude profile other than `~/.claude`
+### Custom Claude profiles
 
-Add it to `allowedProfiles` in `~/.config/bitfrost/config.json`:
+Run the installer with `CLAUDE_CONFIG_DIR` set to your profile to install the plugin there:
+
+```sh
+curl -fsSL https://github.com/SavaSoftworks/BitFrost/releases/latest/download/install.sh | CLAUDE_CONFIG_DIR="$HOME/.claude-other" sh
+```
+
+Add `"CLAUDE_CODE_ENABLE_FUNCTION_HOOKS": "1"` to the `env` block of that profile's `settings.json`.
+
+Also list the profile on the config screen's Settings page, or in `allowedProfiles` in `~/.config/bitfrost/config.json`:
 
 ```json
 { "allowedProfiles": ["~/.claude", "~/.claude-other"] }
@@ -46,11 +55,43 @@ Profiles not listed get no subagents.
 
 ### Choosing settings
 
-Run `bitfrost setup` to answer any settings you haven't chosen yet, and `bitfrost setup handback` to answer one again. The installer and `bitfrost update` ask about them at the end of an install, using the new release's own questions. Without a terminal nothing is asked: the settings stay off, and the installer lists `bitfrost setup` as a next step. A Claude session also mentions unchosen settings, once.
+Use Settings in `bitfrost config` to manage Claude profiles, official handback, history retention and app locations. `bitfrost setup` asks about options you haven't chosen; `bitfrost setup handback` lets you change handback.
+
+The installer and `bitfrost update` also ask about new options. Without an interactive terminal, new optional features remain disabled until configured; run `bitfrost setup` later. Claude mentions unchosen settings once.
+
+### How do I open the config screen?
+
+Run `bitfrost config`, or just `bitfrost` in a terminal. Models manages providers, models and usage statistics; Settings manages configuration; Status shows sessions and daemon activity. Press Tab, or your controller's left shoulder button, to view controls. Gamepads are supported on Linux.
+
+If the interface can't open on your platform, BitFrost prints help and tells you to edit `~/.config/bitfrost/config.json`.
+
+### How do I turn a model on or off?
+
+On the Models page, pick an app, then pick a model. Apps serving their own company's models, like Codex, ZCode and Gemini CLI, offer every model unless you turn them off, which adds the model to `providers.<app>.disabled`:
+
+```json
+{ "providers": { "codex": { "disabled": ["gpt-5-mini"] } } }
+```
+
+Apps serving many companies' models, like opencode, Oh My Pi and Crush, only offer the models you list, so turning one on adds it:
+
+```json
+{ "providers": { "opencode": { "models": ["deepseek/*"] } } }
+```
+
+`*` works as a wildcard. Configuration reloads automatically; start a new Claude session to refresh its available models.
+
+### Why is an app dimmed on the Models page?
+
+That app isn't installed, or BitFrost can't find it. Install and sign in to it, then open the screen again. You can also set where it lives in the screen's Settings page, or in `~/.config/bitfrost/config.json` as `providers.<app>.bin` (or `providers.zcode.dir`).
+
+### Can I use the config screen over SSH or without animations?
+
+Keyboard and mouse controls work over SSH. To turn off animation, set `BITFROST_NO_ANIM=1`.
 
 ### Updating, or installing a specific version
 
-Run `bitfrost update`. It installs the latest release if it's newer than yours, and does nothing otherwise.
+Run `bitfrost update`. It installs the latest release if it's newer than yours, and does nothing otherwise. The config screen (`bitfrost`) also checks when it opens and shows an Update button when there's a newer release; it installs it and reopens on the new version without leaving the screen.
 
 For a specific version, run that release's installer. It installs its own version:
 
@@ -60,14 +101,16 @@ curl -fsSL https://github.com/SavaSoftworks/BitFrost/releases/download/v0.8.1/in
 
 ### Uninstalling
 
-Run `bitfrost uninstall`. It lists what it will remove and asks two questions: remove BitFrost (the Claude plugin, the GLM bridge in ZCode and every file BitFrost added), then also remove your BitFrost config. Add `--yes` to skip the questions and remove both, for example in a script, or `--yes --keep-config` to keep your config. If a subagent is still running, it changes nothing and asks you to wait.
+Run `bitfrost uninstall`. It lists what it will remove and asks whether to remove BitFrost, your configuration, and your subagent history and usage stats. Keeping history preserves it for a reinstall.
+
+`--yes` removes everything without prompting; add `--keep-config` or `--keep-history` to preserve either. If a subagent is running, uninstall changes nothing and asks you to wait.
 
 ## Troubleshooting
 
 ### No BitFrost models in Claude
 
 - Start a new Claude session. If no model can be offered, it shows a BitFrost note saying why.
-- Check `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS` is `"1"` in the `env` block of `~/.claude/settings.json`.
+- Check `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS` is `"1"` in the `env` block of your Claude profile's `settings.json` (`~/.claude/settings.json` by default).
 - Run `bitfrost status` to see which apps were found and how many models each offers.
 
 ### BitFrost can't find Node, Codex or ZCode
@@ -77,6 +120,8 @@ Set `BITFROST_NODE`, `BITFROST_CODEX_BIN` or `BITFROST_ZCODE_DIR`, or in `config
 ```json
 { "providers": { "codex": { "bin": "/path/to/codex" }, "zcode": { "dir": "/opt/ZCode" } } }
 ```
+
+You can also set an app's location on the config screen's Settings page.
 
 Node must be 23.6 or newer.
 
@@ -97,11 +142,11 @@ bitfrost selftest --all
 
 ### Do I need to restart after changing config or updating an app?
 
-No. If you want to anyway: `bitfrost restart`.
+BitFrost reloads configuration and detects app updates automatically. Changes that require restarting an app wait until its active tasks finish. Start a new Claude session to refresh its available models. To restart the daemon manually, run `bitfrost restart`.
 
 ### How do I turn an app off?
 
-`"enabled": false` under its name in `providers`.
+On the config screen, pick the app on the Settings page and turn it off. Or set `"enabled": false` under its name in `providers` in `~/.config/bitfrost/config.json`.
 
 ## Using it
 
@@ -123,23 +168,29 @@ Yes. Reopen the conversation and ask Claude to continue it. It picks up in the s
 
 ### Where does BitFrost keep subagent history?
 
-In `~/.local/share/bitfrost/bitfrost.db`, or `~/Library/Application Support/BitFrost/bitfrost.db` on macOS. Raw events are kept 30 days after a session ends and messages 180 days. To change that:
+In `~/.local/share/bitfrost/bitfrost.db`, or `~/Library/Application Support/BitFrost/bitfrost.db` on macOS. Raw events are kept 30 days after a session ends and messages 180 days. Change this on the config screen's Settings page, or by hand:
 
 ```json
 { "retention": { "eventsDays": 30, "messagesDays": 180 } }
 ```
 
-It holds the subagents' commands and tool output, so it can contain anything they read. Only your user can open it. `bitfrost uninstall` deletes it.
+Usage totals are kept forever, even after transcripts are deleted.
+
+It holds the subagents' commands and tool output, so it can contain anything they read. The database is stored with owner-only file permissions. `bitfrost uninstall` asks before deleting it unless you use `--yes`.
+
+### Where do the usage numbers come from?
+
+From the subagent runs BitFrost has recorded. The Models page shows usage for Today, 7 days, 30 days and All time, including tokens, cache reads, sessions, turns, failures and average durations. Charts show hourly usage for Today and daily usage for the other periods. Each model also shows when it was first and last used.
 
 ### Who answers a subagent's permission requests?
 
-You, never Claude. No answer means Deny. In auto mode, a safety review decides instead.
+In normal mode, you decide; no answer means Deny. In auto mode, a safety review decides instead.
 
 ### What is official handback?
 
 Normally BitFrost writes the step that returns a finished subagent's report to Claude. With this setting on, a Claude model writes that step instead, so auto mode's safety classifier reviews the report on its way through. BitFrost only accepts the report word for word: the model gets up to three tries, then BitFrost hands the report over itself. The extra Claude step counts toward your Claude usage.
 
-Turn it on with `bitfrost setup handback`, or in `~/.config/bitfrost/config.json`:
+Turn it on from the config screen's Settings page, with `bitfrost setup handback`, or in `~/.config/bitfrost/config.json`:
 
 ```json
 { "handback": { "enabled": true, "model": "sonnet", "effort": "low" } }
@@ -149,8 +200,4 @@ Turn it on with `bitfrost setup handback`, or in `~/.config/bitfrost/config.json
 
 ### Does it use my accounts?
 
-Yes. Each app signs in and makes its own requests. Usage counts against your account with that company. BitFrost never touches credentials.
-
-### Terms
-
-Use each company's app within its terms. BitFrost is independent, not affiliated with Anthropic, OpenAI or Z.ai.
+Yes. Your coding apps use their configured accounts. See [Accounts, terms and affiliation](README.md#accounts-terms-and-affiliation) for usage limits, responsibilities and project affiliation.

@@ -21,6 +21,13 @@ main() {
   BIN_DIR=${BITFROST_BIN_DIR:-$HOME/.local/bin}
   CONFIG=${XDG_CONFIG_HOME:-$HOME/.config}/bitfrost/config.json
 
+  case "$(uname -s) $(uname -m)" in
+    "Linux x86_64") tui_platform=linux-x64 ;;
+    "Linux aarch64") tui_platform=linux-arm64 ;;
+    Darwin\ *) tui_platform=darwin-universal ;;
+    *) tui_platform= ;;
+  esac
+
   version=
   from=
   plugin=1
@@ -91,6 +98,7 @@ main() {
 
   if [ -d "$DATA/versions/$version" ] && [ -z "$force" ]; then
     note "Already unpacked" "$(short "$DATA/versions/$version")"
+    add_tui "$DATA/versions/$version"
   else
     mkdir "$tmp/x"
     task "Unpacking" "$base" tar -xzf "$tmp/$base" -C "$tmp/x" || die "can't unpack $base: $(cat "$tmp/log")"
@@ -99,6 +107,7 @@ main() {
     [ -f "$manifest" ] || die "$base doesn't look like a bitfrost release"
     inside=$(sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' "$manifest")
     [ "$inside" = "$version" ] || die "$base holds version '$inside', not $version"
+    add_tui "$root"
     # Renames, so a version folder is never half there. A running helper keeps
     # only the files it already opened, so it is restarted below.
     if [ -d "$DATA/versions/$version" ]; then
@@ -211,7 +220,7 @@ main() {
   if [ -z "$previous" ]; then
     todo "Codex and ZCode work once installed and signed in. For GLM, also run once:"
     cmd "bitfrost setup zcode"
-    todo "opencode, Oh My Pi and Gemini CLI stay off until you turn them on in $(short "$CONFIG")"
+    todo "opencode, Oh My Pi, Gemini CLI and Crush stay off until you turn them on with bitfrost config (or in $(short "$CONFIG"))"
     todo "Setup for each app: https://github.com/$REPO/blob/main/GUIDE.md#setup"
   fi
 }
@@ -299,6 +308,60 @@ verify() {
   [ "$(echo "$got" | tr 'A-F' 'a-f')" = "$(echo "$want" | tr 'A-F' 'a-f')" ] || die "$2 failed its checksum"
 }
 
+# Puts the BitFrost TUI binary into $1/tui/bin. A release made before the TUI, or a
+# platform it isn't built for, only warns; a binary that won't download or verify stops the install.
+add_tui() {
+  # A browser marks what it downloads; macOS then refuses to run the unsigned binary.
+  [ "$(uname -s)" != Darwin ] || xattr -dr com.apple.quarantine "$1" 2>/dev/null || :
+  if [ -x "$1/tui/bin/bitfrost-tui" ]; then
+    note "BitFrost TUI" "already there"
+    return 0
+  fi
+  if [ -z "$tui_platform" ]; then
+    warn "No prebuilt BitFrost TUI for $(uname -s) $(uname -m), so bitfrost config won't open"
+    return 0
+  fi
+  mkdir -p "$tmp/tui" "$1/tui/bin" || die "can't make $1/tui/bin"
+  tui_name=bitfrost-tui-$version-$tui_platform
+  tui_src=
+  if [ -n "$from" ]; then
+    tui_src=$(dirname "$from")/$tui_name
+    [ -f "$tui_src" ] || tui_src=
+  fi
+  if [ -n "$tui_src" ]; then
+    cp "$tui_src" "$tmp/tui/$tui_name" || die "can't copy $tui_src"
+    if [ -f "$tui_src.sha256" ]; then
+      cp "$tui_src.sha256" "$tmp/tui/$tui_name.sha256" || die "can't copy $tui_src.sha256"
+      verify "$tmp/tui" "$tui_name"
+    else
+      warn "No $tui_name.sha256 next to it, so its checksum wasn't checked"
+    fi
+  else
+    if ! command -v curl >/dev/null 2>&1; then
+      warn "curl is needed to fetch the BitFrost TUI, so bitfrost config won't open"
+      return 0
+    fi
+    tui_url=https://github.com/$REPO/releases/download/v$version
+    # Ask first, so a release without a TUI warns but a broken download stops.
+    if ! code=$(curl -sSIL -o /dev/null -w '%{http_code}' "$tui_url/$tui_name" 2>"$tmp/log"); then
+      # A local tarball may be installed offline; only a release install needs GitHub.
+      [ -n "$from" ] || die "can't reach $tui_url: $(cat "$tmp/log")"
+      warn "No $tui_name next to $(basename "$from") and GitHub can't be reached, so bitfrost config won't open"
+      return 0
+    fi
+    if [ "$code" = 404 ]; then
+      warn "Release v$version has no BitFrost TUI for $tui_platform, so bitfrost config won't open"
+      return 0
+    fi
+    fetch "$tui_url/$tui_name" "$tmp/tui/$tui_name" || die "can't download $tui_name: $(cat "$tmp/log")"
+    curl -fsSL -o "$tmp/tui/$tui_name.sha256" "$tui_url/$tui_name.sha256" 2>"$tmp/log" || die "can't download $tui_name.sha256: $(cat "$tmp/log")"
+    verify "$tmp/tui" "$tui_name"
+  fi
+  cp "$tmp/tui/$tui_name" "$1/tui/bin/bitfrost-tui" || die "can't place the BitFrost TUI in $1/tui/bin"
+  chmod 755 "$1/tui/bin/bitfrost-tui" || die "can't make $1/tui/bin/bitfrost-tui runnable"
+  done_ "BitFrost TUI" "$tui_name"
+}
+
 check_version() {
   case $1 in
     '' | *[!0-9.]* | .* | *. | *..*) die "not a version: '$1'" ;;
@@ -347,13 +410,26 @@ header() {
   elif [ "$previous" = "$version" ] && [ -n "$force" ]; then step "Reinstalling BitFrost $version"
   else step "Installing BitFrost $version"; fi
 }
+# With BITFROST_INSTALL_EVENTS set, each step also prints a tab-separated line for the
+# config screen to follow: @@bitfrost, then running, done, note, warn or fail, a label and detail.
+event() { [ -z "${BITFROST_INSTALL_EVENTS:-}" ] || printf '@@bitfrost\t%s\t%s\t%s\n' "$1" "$2" "$3"; }
 step() { printf '%s::%s %s%s%s\n' "$C" "$N" "$B" "$*" "$N"; }
-done_() { printf '   %s✓%s %-20s  %s%s%s\n' "$G" "$N" "$1" "$D" "$2" "$N"; }
-note() { printf '   %s-%s %-20s  %s%s%s\n' "$D" "$N" "$1" "$D" "$2" "$N"; }
-warn() { printf '   %s!%s %s\n' "$Y" "$N" "$*"; }
+done_() {
+  event "done" "$1" "$2"
+  printf '   %s✓%s %-20s  %s%s%s\n' "$G" "$N" "$1" "$D" "$2" "$N"
+}
+note() {
+  event note "$1" "$2"
+  printf '   %s-%s %-20s  %s%s%s\n' "$D" "$N" "$1" "$D" "$2" "$N"
+}
+warn() {
+  event warn "$*" ""
+  printf '   %s!%s %s\n' "$Y" "$N" "$*"
+}
 todo() { printf '   %s-%s %s\n' "$D" "$N" "$*"; }
 cmd() { printf '       %s%s%s\n' "$B" "$*" "$N"; }
 die() {
+  event fail "$*" ""
   printf '%sbitfrost install:%s %s\n' "$R" "$N" "$*" >&2
   exit 1
 }
@@ -368,6 +444,7 @@ cleanup() {
 # Redraws one line while job $1 runs: label $2, detail $3, and for a download
 # into file $4 of $5 bytes, how much has arrived.
 spin() {
+  event running "$2" "$3"
   [ -n "$TTY" ] || return 0
   i=0
   # Cut to the terminal width: a wrapped line can't be redrawn in place.

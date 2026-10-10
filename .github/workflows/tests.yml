@@ -30,3 +30,7 @@ jobs:
         run: npm install -g @anthropic-ai/claude-code
       - run: npm run test:daemon
       - run: npm run test:plugin
+
+  # The TUI builds same way as releases ship it, on every platform, with its tests.
+  tui:
+    uses: ./.github/workflows/tui.yml

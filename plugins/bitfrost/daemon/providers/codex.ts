@@ -506,7 +506,14 @@ export class CodexAdapter implements Provider {
       }
       case 'thread/tokenUsage/updated': {
         const last = p.tokenUsage?.last
-        if (last) emit({ type: 'usage', inputTokens: last.inputTokens ?? 0, outputTokens: last.outputTokens ?? 0, cachedInputTokens: last.cachedInputTokens ?? 0 })
+        if (last) {
+          const total = p.tokenUsage?.total
+          // The cumulative usage before this request stays fixed as its output grows.
+          // Include the turn so identical calls in separate turns never collide.
+          const before = total ? `${total.inputTokens - last.inputTokens}:${total.outputTokens - last.outputTokens}` : String(last.inputTokens)
+          const requestId = `${p.turnId ?? session.activeTurnId}:${before}`
+          emit({ type: 'usage', requestId, inputTokens: last.inputTokens ?? 0, outputTokens: last.outputTokens ?? 0, cachedInputTokens: last.cachedInputTokens ?? 0 })
+        }
         return
       }
       case 'item/agentMessage/delta':
@@ -648,10 +655,13 @@ export function desktopCodex(codexHome = process.env.CODEX_HOME ?? path.join(os.
 
 export const codexProvider: ProviderFactory = {
   id: 'codex',
+  displayName: 'Codex',
+  vendor: 'OpenAI',
   create(env: ProviderEnv) {
     const chosen = process.env.BITFROST_CODEX_BIN ?? env.config.bin ?? env.resolveBinary('codex')
     if (chosen) return new CodexAdapter(chosen, env.log, env.recorder('codex'))
     const bin = desktopCodex()
     return bin ? new CodexAdapter(bin, env.log, env.recorder('codex'), () => desktopCodex()) : null
   },
+  detect: (env) => process.env.BITFROST_CODEX_BIN ?? env.config.bin ?? env.resolveBinary('codex') ?? desktopCodex(),
 }

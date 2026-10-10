@@ -29,6 +29,24 @@ const DEVELOPER_INSTRUCTIONS =
 // Tools Claude Code can draw as its own. Grep and Glob wait for full output to rebuild their result.
 const REPLAYABLE = new Set(['Bash', 'Read', 'Edit', 'Write', 'Grep', 'Glob'])
 
+// Which of Grep and Glob this Claude Code has; newer ones search through Bash instead.
+let searchTools = null
+const searchToolsOf = ($) =>
+  (searchTools ??= Promise.resolve()
+    .then(() => $.tool.list())
+    .then((list) => new Set(list.map((t) => t.name).filter((n) => n === 'Grep' || n === 'Glob')))
+    .catch(() => new Set()))
+
+const quote = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`
+
+// A search shown as the rg command it amounts to, for a Claude Code without the tool.
+function searchCommand(name, input = {}) {
+  const where = input.path ? ` ${quote(input.path)}` : ''
+  if (name === 'Glob') return { command: `rg --files -g ${quote(input.pattern ?? '*')}${where}`, description: `Find files matching ${input.pattern ?? '*'}` }
+  const glob = input.glob ? ` -g ${quote(input.glob)}` : ''
+  return { command: `rg -n ${quote(input.pattern ?? '')}${glob}${where}`, description: `Search for ${input.pattern ?? ''}` }
+}
+
 let socketPath = null
 let sessionCwd = null
 let leaseId = null
@@ -1583,6 +1601,7 @@ async function readRows($, agentId, as) {
 
 // Replays one step of the foreign session: new events as chunks, then a tool row or the hand-back.
 async function* replayStep($, e, next, st, ctl) {
+  const searchable = await searchToolsOf($)
   const read = await readRows($, e.agentId)
   const rows = read.rows ?? null
   const last = rows?.at(-1)
@@ -1900,6 +1919,12 @@ async function* replayStep($, e, next, st, ctl) {
         // Shown through question_asked instead.
       } else if (ev.type === 'tool_started' && (ev.name === 'Grep' || ev.name === 'Glob')) {
         // Drawn once they complete, since the row needs the full output.
+      } else if (ev.type === 'tool_completed' && (ev.name === 'Grep' || ev.name === 'Glob') && !searchable.has(ev.name) && !st.rendered.has(ev.itemId)) {
+        // Calling a tool this Claude Code lacks would show as failed, though the search ran fine.
+        st.rendered.add(ev.itemId)
+        const id = newToolId()
+        st.pending.set(id, { kind: 'result', result: { stdout: ev.output ?? '', stderr: '', interrupted: false, noOutputExpected: !ev.output } })
+        tools.push({ id, name: 'Bash', input: searchCommand(ev.name, ev.input) })
       } else if ((ev.type === 'tool_started' || ev.type === 'tool_completed') && !st.rendered.has(ev.itemId)) {
         st.rendered.add(ev.itemId)
         const shape = ev.name === 'Grep' ? grepResult : ev.name === 'Glob' ? globResult : null

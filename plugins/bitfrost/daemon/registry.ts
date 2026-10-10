@@ -17,19 +17,20 @@ export type AgentDef = HarnessModel & {
 
 const vendorKey = (v: string) => v.toLowerCase().replace(/[^a-z0-9]/g, '')
 
-// Exclude Anthropic and use each company's own app when available.
-// Require a model list for apps serving many companies to keep host context small.
-export function selectModels(found: HarnessModel[], ownVendors: Map<string, string>, allow: Map<string, string[]>): HarnessModel[] {
-  const own = [...ownVendors.entries()].map(([harness, v]) => ({ harness, key: vendorKey(v) }))
-  return found.filter((m) => {
-    const vendor = vendorKey(m.provider)
-    if (vendor.startsWith('anthropic')) return false
-    const home = own.find((o) => vendor.startsWith(o.key))
-    if (home && home.harness !== m.harness) return false
-    const list = allow.get(m.harness)
-    if (!list) return ownVendors.has(m.harness)
-    return list.some((pattern) => globMatch(pattern, m.model))
-  })
+export type Offer = null | 'anthropic' | 'disabled' | 'not_listed'
+
+// Exclude Anthropic only. Apps serving many companies need a model list to keep host context small.
+// Returns why a model isn't offered, or null when it is.
+export function whyNot(m: HarnessModel, ownVendors: Map<string, string>, allow: Map<string, string[]>, deny: Map<string, string[]> = new Map()): Offer {
+  if (vendorKey(m.provider).startsWith('anthropic')) return 'anthropic'
+  if (deny.get(m.harness)?.some((pattern) => globMatch(pattern, m.model))) return 'disabled'
+  const list = allow.get(m.harness)
+  if (!list) return ownVendors.has(m.harness) ? null : 'not_listed'
+  return list.some((pattern) => globMatch(pattern, m.model)) ? null : 'not_listed'
+}
+
+export function selectModels(found: HarnessModel[], ownVendors: Map<string, string>, allow: Map<string, string[]>, deny?: Map<string, string[]>): HarnessModel[] {
+  return found.filter((m) => whyNot(m, ownVendors, allow, deny) === null)
 }
 
 export function globMatch(pattern: string, value: string): boolean {
@@ -60,35 +61,45 @@ function newer(a: string | null, b: string | null): boolean {
   return false
 }
 
-// Build versioned aliases; bare names select the newest model in each family.
-export function buildAgents(models: HarnessModel[]): AgentDef[] {
+// Build versioned aliases; bare names select the newest model in each family. A model run by its
+// company's own app claims its name and aliases before the same model through another app.
+export function buildAgents(models: HarnessModel[], ownVendors: Map<string, string> = new Map()): AgentDef[] {
   const facts = new Map(models.map((m) => [m, familyOf(m.displayName)]))
+  const own = (m: HarnessModel) => {
+    const v = ownVendors.get(m.harness)
+    return !!v && vendorKey(m.provider).startsWith(vendorKey(v))
+  }
+  const ranked = [...models].sort((a, b) => Number(own(b)) - Number(own(a)))
   const bareNames = (m: HarnessModel) => {
     const f = facts.get(m)!
     return f.vendor ? [f.family, `${f.vendor} ${f.family}`] : [f.family]
   }
   const newest = new Map<string, HarnessModel>()
-  for (const m of models) {
+  for (const m of ranked) {
     for (const bare of bareNames(m)) {
       const cur = newest.get(bare)
       if (!cur || newer(facts.get(m)!.version, facts.get(cur)!.version)) newest.set(bare, m)
     }
   }
   const taken = new Set<string>()
-  return models.map((m) => {
+  const claimed = new Set<string>()
+  const defs = new Map<HarnessModel, AgentDef>()
+  for (const m of ranked) {
     const { family, vendor, version } = facts.get(m)!
     const aliases = new Set<string>()
+    const claim = (alias: string) => { if (!claimed.has(alias)) { claimed.add(alias); aliases.add(alias) } }
     if (version) {
-      aliases.add(`${family.replace(/\s+/g, '')}${version}`)
-      aliases.add(`${family} ${version}`)
-      if (vendor) aliases.add(`${vendor}${version} ${family}`)
+      claim(`${family.replace(/\s+/g, '')}${version}`)
+      claim(`${family} ${version}`)
+      if (vendor) claim(`${vendor}${version} ${family}`)
     }
-    for (const bare of bareNames(m)) if (newest.get(bare) === m) aliases.add(bare)
+    for (const bare of bareNames(m)) if (newest.get(bare) === m) claim(bare)
     let name = agentName(m.model)
     while (taken.has(name)) name = `${name}-${m.harness}`
     taken.add(name)
-    return { ...m, name, aliases: [...aliases], family, harnessName: m.harnessName ?? m.harness }
-  })
+    defs.set(m, { ...m, name, aliases: [...aliases], family, harnessName: m.harnessName ?? m.harness })
+  }
+  return models.map((m) => defs.get(m)!)
 }
 
 export function describe(a: AgentDef, all: AgentDef[]): string {

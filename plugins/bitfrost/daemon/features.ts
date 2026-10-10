@@ -13,7 +13,10 @@ export type Answers = Record<string, unknown>
 // What a question's option list or condition gets to look at.
 export type AskContext = { config: Record<string, any>; answers: Answers }
 
-type Base = { key: string; prompt: string; help?: string; when?: (answers: Answers) => boolean }
+// Ask only when an earlier answer matches; the plain form can be shown in the config screen too.
+export type When = ((answers: Answers) => boolean) | { key: string; equals: unknown }
+// label is the short name the config screen shows; states names a confirm's off and on.
+type Base = { key: string; prompt: string; label?: string; states?: [string, string]; help?: string; when?: When }
 export type Question =
   | (Base & { type: 'confirm'; default: boolean })
   | (Base & { type: 'choice'; default?: string; options: Option[] | ((ctx: AskContext) => Option[] | Promise<Option[]>) })
@@ -24,6 +27,8 @@ export type Feature = {
   since: string
   title: string
   questions: Question[]
+  // Shown in the config screen but not asked by setup.
+  more?: Question[]
   // Written with the answers, for settings that aren't asked.
   defaults?: Answers
 }
@@ -39,6 +44,8 @@ export const CLAUDE_MODELS = [
 // A family name to its model id. Anything else is taken as an id already.
 export const claudeModelId = (model: string) => CLAUDE_MODELS.find((m) => m.family === model)?.id ?? model
 
+export const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max']
+
 export const claudeModels = (): Option[] => CLAUDE_MODELS.map((m) => ({ value: m.family, label: m.label }))
 
 export const FEATURES: Feature[] = [
@@ -52,6 +59,8 @@ export const FEATURES: Feature[] = [
         key: 'enabled',
         type: 'confirm',
         prompt: 'Enable official subagent handback?',
+        label: 'Status',
+        states: ['Disabled', 'Enabled'],
         help: 'This uses an Anthropic model to process the handback, so its safety classifiers run on it.',
         default: false,
       },
@@ -59,14 +68,30 @@ export const FEATURES: Feature[] = [
         key: 'model',
         type: 'choice',
         prompt: 'Which model should handle subagent handback calls?',
-        when: (a) => a.enabled === true,
+        label: 'Model',
+        when: { key: 'enabled', equals: true },
         options: claudeModels,
         default: 'sonnet',
+      },
+    ],
+    more: [
+      {
+        key: 'effort',
+        type: 'choice',
+        prompt: 'Handback reasoning effort',
+        label: 'Effort',
+        help: 'How hard the handback model thinks. Low is enough for passing a report back.',
+        when: { key: 'enabled', equals: true },
+        options: EFFORTS.map((e) => ({ value: e, label: e })),
+        default: 'low',
       },
     ],
     defaults: { effort: 'low' },
   },
 ]
+
+export const shows = (when: When | undefined, answers: Answers) =>
+  !when || (typeof when === 'function' ? when(answers) : answers[when.key] === when.equals)
 
 export const findFeature = (id: string) => FEATURES.find((f) => f.id === id)
 
@@ -90,7 +115,7 @@ export async function askFeature(
 ): Promise<Answers | null> {
   const answers: Answers = {}
   for (const q of f.questions) {
-    if (q.when && !q.when(answers)) continue
+    if (!shows(q.when, answers)) continue
     const options = await optionsFor(q, { config, answers })
     // A choice with nothing to pick leaves the feature for later.
     if (q.type === 'choice' && !options.length) return null

@@ -18,7 +18,7 @@ Thanks for helping. Bug reports, fixes and support for more apps are all welcome
 | `plugins/bitfrost/daemon/test/` | Tests that replay recorded app output through each provider, and one that runs the helper itself against a fake Codex (`npm run test:daemon`). They are named `*.spec.ts` so the plugin test kit leaves them alone. `npm test` runs both suites. |
 | `plugins/bitfrost/bin/bitfrostd` | Starts the helper and finds a usable Node. The `bitfrost` command links to it. |
 | `release/install.sh` | The installer, attached to every release as is. |
-| `release/build.sh` | Builds `dist/bitfrost-<version>.tar.gz` and its `.sha256`. |
+| `release/build.sh` | Builds `dist/bitfrost-<version>.tar.gz`, its `.sha256`, and this machine's config screen when cmake is there. |
 | `.github/workflows/release.yml` | Tests every pull request. On main, makes a release when the version in `plugin.json` has none yet. |
 
 ## Installing from a checkout
@@ -29,6 +29,15 @@ To work on BitFrost itself, install the plugin from your checkout:
 claude plugin marketplace add /path/to/bitfrost
 claude plugin install bitfrost@bitfrost --scope user
 ```
+
+## Building the TUI
+
+**How do I get the config screen?** Run release/build-tui.sh once; the bitfrost
+command finds tui/build/bitfrost-tui on its own. No cmake or C++ compiler?
+Skip it: everything but the config screen works without it.
+
+**How should the C++ look?** tui/.clang-format decides, the same style as Eden-Browser.
+Run clang-format -i on the files you touch; ctest fails on anything it would change.
 
 ## Ground rules
 

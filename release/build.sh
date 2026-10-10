@@ -6,8 +6,12 @@
 # Public License, version 3 only. It comes with no warranty. See LICENSE.
 
 # Builds dist/bitfrost-<version>.tar.gz, its .sha256, and dist/install.sh
-# stamped to install that version.
+# stamped to install that version. Also builds this machine's config screen
+# next to them, so install.sh --from picks it up; --no-tui skips that.
 set -eu
+
+tui=1
+[ "${1:-}" != --no-tui ] || tui=
 
 cd "$(dirname "$0")/.."
 version=$(node -p 'JSON.parse(require("fs").readFileSync("plugins/bitfrost/.claude-plugin/plugin.json", "utf8")).version')
@@ -42,4 +46,22 @@ rm -rf "$out"
 
 sed "s/^RELEASE=\$/RELEASE=$version/" release/install.sh >dist/install.sh
 grep -qx "RELEASE=$version" dist/install.sh || { echo "build.sh: couldn't stamp install.sh" >&2; exit 1; }
+
+# Named the way install.sh looks for it. CI builds the shipped ones itself.
+case "$(uname -s) $(uname -m)" in
+  "Linux x86_64") platform=linux-x64 ;;
+  "Linux aarch64") platform=linux-arm64 ;;
+  Darwin\ *) platform=darwin-universal ;;
+  *) platform= ;;
+esac
+if [ -n "$tui" ] && [ -n "$platform" ]; then
+  if command -v cmake >/dev/null 2>&1; then
+    asset=bitfrost-tui-$version-$platform
+    release/build-tui.sh "dist/$asset" >&2
+    if command -v sha256sum >/dev/null 2>&1; then sum="sha256sum"; else sum="shasum -a 256"; fi
+    (cd dist && $sum "$asset" >"$asset.sha256")
+  else
+    echo "build.sh: no cmake, so the config screen wasn't built" >&2
+  fi
+fi
 echo "$version"

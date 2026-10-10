@@ -6,7 +6,7 @@
 
 // bitfrost uninstall: stops the helper, takes BitFrost out of Claude Code and
 // the apps it set up, then deletes everything install.sh and the helper wrote.
-// The user's config goes only when they say so.
+// The user's config and subagent history go only when they say so.
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -21,6 +21,8 @@ const HOME = os.homedir()
 const DATA = path.join(process.env.XDG_DATA_HOME || path.join(HOME, '.local', 'share'), 'bitfrost')
 const BIN = path.join(process.env.BITFROST_BIN_DIR || path.join(HOME, '.local', 'bin'), 'bitfrost')
 const DEFAULT_PROFILE = canonical('~/.claude')
+// The subagent history and usage stats, kept apart so a reinstall can pick them up again.
+const HISTORY = ['bitfrost.db', 'bitfrost.db-wal', 'bitfrost.db-shm'].map((f) => path.join(DATA_DIR, f))
 
 // Same places install.sh looks, since a desktop app may hold the only copy.
 function findClaude(): string | null {
@@ -65,8 +67,8 @@ type Item = { label: string; path: string; size?: number }
 const pluginIn = (profile: string) => `bitfrost@bitfrost from ${short(profile)}`
 // Apps keep their own config; only BitFrost's entry leaves it.
 const entryIn = (file: string) => `from ${short(file)}`
-export type Plan = { program: Item[]; config: Item[]; claude: string | null }
-export type Choice = { program: boolean; config: boolean }
+export type Plan = { program: Item[]; config: Item[]; history: Item[]; claude: string | null }
+export type Choice = { program: boolean; config: boolean; history: boolean }
 
 function sizeOf(p: string): number {
   try {
@@ -106,21 +108,34 @@ function hasPlugin(profile: string): boolean {
   return listed('installed_plugins.json', 'bitfrost@bitfrost', 'plugins') || listed('known_marketplaces.json', 'bitfrost') || fs.existsSync(path.join(profile, 'plugins', 'cache', 'bitfrost'))
 }
 
+// What's in a folder besides the history files, which may live inside it.
+const others = (dir: string) => {
+  try {
+    return fs.readdirSync(dir).map((f) => path.join(dir, f)).filter((f) => !HISTORY.some((h) => h === f || h.startsWith(`${f}/`)))
+  } catch {
+    return []
+  }
+}
+
 export function planOf(claude = findClaude()): Plan {
   const file = (label: string, p: string): Item[] => (fs.existsSync(p) ? [{ label, path: p, size: sizeOf(p) }] : [])
+  const history = HISTORY.filter((f) => fs.existsSync(f))
+  const historySize = history.reduce((sum, f) => sum + sizeOf(f), 0)
+  const appFiles = file('App files', DATA).map((i) => ({ ...i, size: (i.size ?? 0) - (DATA_DIR === DATA ? historySize : 0) }))
   return {
     claude,
     program: [
       // Only the plugin leaves the profile; the profile itself stays.
       ...profilesOf().filter(hasPlugin).map((profile) => ({ label: 'Claude Code plugin', path: pluginIn(profile) })),
       ...PROVIDERS.flatMap((p) => p.uninstall?.(true) ?? []).map((i) => ({ label: i.label, path: entryIn(i.path) })),
-      ...file('App files', DATA),
-      ...(DATA_DIR !== DATA ? file('Subagent history', DATA_DIR) : []),
+      ...appFiles,
+      ...(DATA_DIR !== DATA && others(DATA_DIR).length ? [{ label: 'Helper data', path: DATA_DIR, size: others(DATA_DIR).reduce((sum, f) => sum + sizeOf(f), 0) }] : []),
       ...(ours() ? [{ label: 'Command', path: BIN }] : []),
       ...file('Model list cache', path.dirname(CACHE)),
       ...file('Helper runtime files', RUN_DIR),
     ],
     config: file('Config', path.dirname(CONFIG)),
+    history: history.length ? [{ label: 'Subagent history and stats', path: HISTORY[0], size: historySize }] : [],
   }
 }
 
@@ -130,7 +145,7 @@ function printGroup(n: number, title: string, items: Item[], width: [number, num
 }
 
 export function printPlan(plan: Plan) {
-  const all = [...plan.program, ...plan.config]
+  const all = [...plan.program, ...plan.config, ...plan.history]
   const width: [number, number] = [Math.max(0, ...all.map((i) => i.label.length)), Math.max(0, ...all.map((i) => short(i.path).length))]
   console.log(`\n${bold('BitFrost uninstall')}\n`)
   if (plan.program.length) {
@@ -142,6 +157,10 @@ export function printPlan(plan: Plan) {
     printGroup(2, 'Your config', plan.config, width)
     console.log()
   }
+  if (plan.history.length) {
+    printGroup(3, 'Your history', plan.history, width)
+    console.log()
+  }
 }
 
 async function confirm(plan: Plan): Promise<Choice> {
@@ -150,10 +169,16 @@ async function confirm(plan: Plan): Promise<Choice> {
   try {
     // Ctrl+D counts as no.
     const yes = async (q: string) => /^y(es)?$/i.test((await rl.question(`${blue('::')} ${bold(q)} [y/N] `).catch(() => '')).trim())
-    // With only the config left, that is the one question.
-    if (!plan.program.length) return { program: false, config: await yes('Remove your config (2)?') }
-    if (!(await yes('Remove BitFrost itself (1)?'))) return { program: false, config: false }
-    return { program: true, config: plan.config.length > 0 && (await yes('Also remove your config (2)?')) }
+    // With BitFrost itself gone, only what's left is asked about.
+    if (!plan.program.length) {
+      const config = plan.config.length > 0 && (await yes('Remove your config (2)?'))
+      const history = plan.history.length > 0 && (await yes(`${config ? 'Also remove' : 'Remove'} your subagent history and usage stats (3)?`))
+      return { program: false, config, history }
+    }
+    if (!(await yes('Remove BitFrost itself (1)?'))) return { program: false, config: false, history: false }
+    const config = plan.config.length > 0 && (await yes('Also remove your config (2)?'))
+    const history = plan.history.length > 0 && (await yes('Also remove your subagent history and usage stats (3)?'))
+    return { program: true, config, history }
   } finally {
     rl.close()
   }
@@ -165,32 +190,51 @@ async function remove(p: string, label: string) {
   done(label, p)
 }
 
-export type Options = { yes?: boolean; keepConfig?: boolean }
+// Removes a folder, or everything in it but the history when that stays.
+async function removeAround(dir: string, label: string, keepHistory: boolean) {
+  if (!keepHistory || !HISTORY.some((f) => f.startsWith(`${dir}/`) && fs.existsSync(f))) return remove(dir, label)
+  const rest = others(dir)
+  if (rest.length) {
+    await task(label, `removing ${short(dir)}`, () => Promise.all(rest.map((f) => fs.promises.rm(f, { recursive: true, force: true }))))
+    done(label, dir)
+  }
+  // Walk protected ancestors too, removing their siblings while keeping the database itself.
+  for (const file of HISTORY) {
+    if (!file.startsWith(`${dir}/`)) continue
+    const child = path.join(dir, path.relative(dir, file).split(path.sep)[0])
+    if (child !== file && fs.existsSync(child)) {
+      await removeAround(child, label, true)
+      break
+    }
+  }
+}
+
+export type Options = { yes?: boolean; keepConfig?: boolean; keepHistory?: boolean }
 // stop() shuts the helper down and returns why it couldn't, or null; running() says whether it is up.
 export type Helper = { stop: () => Promise<string | null>; running: () => Promise<boolean> }
 
 export async function uninstall(helper: Helper, opts: Options = {}, ask: (plan: Plan) => Promise<Choice> = confirm): Promise<number> {
-  let choice: Choice = { program: true, config: !opts.keepConfig }
+  let choice: Choice = { program: true, config: !opts.keepConfig, history: !opts.keepHistory }
   const claude = findClaude()
   if (!opts.yes) {
     if (!process.stdin.isTTY && ask === confirm) {
-      fail('uninstall', 'no terminal to ask in; run bitfrost uninstall --yes (add --keep-config to keep your config)')
+      fail('uninstall', 'no terminal to ask in; run bitfrost uninstall --yes (add --keep-config or --keep-history to keep those)')
       return 1
     }
     // Only a person reads the plan, so only then is it worth sizing every file.
     const plan = planOf(claude)
-    if (!plan.program.length && !plan.config.length) {
+    if (!plan.program.length && !plan.config.length && !plan.history.length) {
       step('BitFrost is not on this machine. Nothing to remove.')
       return 0
     }
     choice = await ask(plan)
-    if (!choice.program && !choice.config) {
+    if (!choice.program && !choice.config && !choice.history) {
       console.log(`\n${blue('::')} Nothing changed.`)
       return 1
     }
   }
   console.log()
-  step(choice.program ? 'Removing BitFrost' : 'Removing your config')
+  step(choice.program ? 'Removing BitFrost' : choice.config && choice.history ? 'Removing your config and history' : choice.config ? 'Removing your config' : 'Removing your history')
   const profiles = profilesOf()
   if (choice.program) {
     const up = await helper.running()
@@ -226,17 +270,26 @@ export async function uninstall(helper: Helper, opts: Options = {}, ask: (plan: 
 
     for (const p of PROVIDERS) for (const i of p.uninstall?.() ?? []) done(i.label, entryIn(i.path))
     if (ours()) await remove(BIN, 'Command')
-    await remove(DATA, 'App files')
-    if (DATA_DIR !== DATA) await remove(DATA_DIR, 'Subagent history')
+    await removeAround(DATA, 'App files', !choice.history)
+    if (DATA_DIR !== DATA) await removeAround(DATA_DIR, 'Helper data', !choice.history)
     await remove(path.dirname(CACHE), 'Model list cache')
     await remove(RUN_DIR, 'Helper runtime files')
   }
   if (choice.config) await remove(path.dirname(CONFIG), 'Config')
   else if (fs.existsSync(CONFIG)) note(`${'Kept your config'.padEnd(LABEL)}  ${dim(short(CONFIG))}`)
+  if (choice.history) {
+    const files = HISTORY.filter((f) => fs.existsSync(f))
+    if (files.length) {
+      await task('History', `removing ${short(HISTORY[0])}`, () => Promise.all(files.map((f) => fs.promises.rm(f, { force: true }))))
+      done('History', HISTORY[0])
+    }
+    // The folder goes too once nothing else is in it.
+    try { if (!fs.readdirSync(DATA_DIR).length) fs.rmdirSync(DATA_DIR) } catch {}
+  } else if (fs.existsSync(HISTORY[0])) note(`${'Kept your history'.padEnd(LABEL)}  ${dim(short(HISTORY[0]))}`)
 
   console.log()
   if (!choice.program) {
-    step('Your config is removed.')
+    step(choice.config && choice.history ? 'Your config and history are removed.' : choice.config ? 'Your config is removed.' : 'Your history is removed.')
     return 0
   }
   step('BitFrost is uninstalled. Restart any open Claude sessions.')

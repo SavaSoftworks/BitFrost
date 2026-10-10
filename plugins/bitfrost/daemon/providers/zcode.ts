@@ -56,6 +56,7 @@ type Turn = {
   tools: Map<string, { name: string; input: unknown }>
   stderr: string
   failed: boolean
+  usageRequest?: string
   failure: { reason: EndReason; code?: string; error: string } | null
 }
 
@@ -448,10 +449,11 @@ export class ZCodeAdapter implements Provider {
         turn.failure = zcodeFailure(p.error ?? p)
         return
       case 'session.updated':
+        if (p.querySource === 'main_turn' && p.type === 'model_request_started') turn.usageRequest = String(p.requestId ?? p.queryId ?? ev.eventId ?? ev.seq)
         if (p.type === 'model_request_failed' || p.statusType === 'model_request_failed' || p.kind === 'model_request_failed' || p.reason === 'model_request_failed' || p.queryStatus === 'model_request_failed' || p.model_request_failed) turn.failure = zcodeFailure(p.error ?? p.model_request_failed ?? p)
         // Report one request's context size; turn totals would trigger false context limits.
         if (p.usage && p.querySource === 'main_turn' && p.contextWindow != null) {
-          emit({ type: 'usage', inputTokens: p.usage.inputTokens ?? 0, outputTokens: p.usage.outputTokens ?? 0, cachedInputTokens: p.usage.cacheReadTokens ?? 0 })
+          emit({ type: 'usage', requestId: `${turn.turnId}:${turn.usageRequest ?? ev.eventId ?? ev.seq}`, inputTokens: p.usage.inputTokens ?? 0, outputTokens: p.usage.outputTokens ?? 0, cachedInputTokens: p.usage.cacheReadTokens ?? 0 })
         }
         return
       case 'turn.completed':
@@ -595,6 +597,9 @@ export function sessionDbFor(dataDir = process.env.BITFROST_DATA_DIR || (process
 
 export const zcodeProvider: ProviderFactory = {
   id: 'zcode',
+  displayName: 'ZCode',
+  vendor: 'Z.ai',
+  detect: (env) => resolveZCodeDir(env),
   create(env) {
     const dir = resolveZCodeDir(env)
     if (!dir) return null

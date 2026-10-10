@@ -1,0 +1,94 @@
+{
+ "config": {
+  "models": {
+   "large": {
+    "provider": "opencode-go",
+    "model": "glm-5.3"
+   },
+   "small": {
+    "provider": "opencode-go",
+    "model": "glm-5.3"
+   }
+  },
+  "providers": {
+   "opencode-go": {
+    "name": "OpenCode Go",
+    "api_key": "fake-key-never-logged",
+    "models": [
+     {
+      "id": "deepseek-v4.1-flash",
+      "name": "DeepSeek V4.1 Flash",
+      "reasoning_levels": [
+       "low",
+       "high",
+       "max"
+      ],
+      "default_reasoning_effort": "high",
+      "can_reason": true
+     },
+     {
+      "id": "glm-5.3",
+      "name": "GLM-5.3",
+      "reasoning_levels": [
+       "low",
+       "high",
+       "max"
+      ],
+      "default_reasoning_effort": "high",
+      "can_reason": true
+     }
+    ]
+   }
+  }
+ },
+ "turns": [
+  [
+   {
+    "emit": {
+     "type": "message",
+     "payload": {
+      "type": "created",
+      "payload": {
+       "id": "m1",
+       "role": "assistant",
+       "session_id": "$SID",
+       "parts": [],
+       "model": "glm-5.3",
+       "provider": "opencode-go",
+       "created_at": 1,
+       "updated_at": 1
+      }
+     }
+    }
+   },
+   {
+    "emit": {
+     "type": "message",
+     "payload": {
+      "type": "updated",
+      "payload": {
+       "id": "m1",
+       "role": "assistant",
+       "session_id": "$SID",
+       "parts": [
+        {
+         "type": "text",
+         "data": {
+          "text": "Hi from GLM"
+         }
+        }
+       ],
+       "model": "glm-5.3",
+       "provider": "opencode-go",
+       "created_at": 1,
+       "updated_at": 1
+      }
+     }
+    }
+   },
+   {
+    "waitCancel": true
+   }
+  ]
+ ]
+}

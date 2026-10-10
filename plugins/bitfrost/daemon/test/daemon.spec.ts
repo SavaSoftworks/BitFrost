@@ -419,6 +419,77 @@ test('an unfinished persisted turn ends with daemon_restart after a hard daemon 
   assert.equal((await call('GET',`/sessions/${id}/messages`)).body.turns[0].reason,'daemon_restart')
 })
 
+test('/providers lists every app, with its mode and whether it runs', async () => {
+  const r = await call('GET', '/providers')
+  assert.strictEqual(r.status, 200)
+  const byId = Object.fromEntries(r.body.providers.map((p: any) => [p.id, p]))
+  assert.deepStrictEqual(r.body.providers.slice(0, 2).map((p: any) => p.id), ['codex', 'zcode'])
+  assert.deepStrictEqual([byId.codex.running, byId.codex.enabled, byId.codex.detected, byId.codex.mode, byId.codex.location], [true, true, true, 'deny', FAKE])
+  assert.deepStrictEqual([byId.zcode.running, byId.zcode.enabled, byId.zcode.mode], [false, false, 'deny'])
+  assert.deepStrictEqual([byId.opencode.running, byId.opencode.enabled, byId.opencode.optIn, byId.opencode.mode], [false, false, true, 'allow'])
+})
+
+test('/providers/:id/models shows every model and why one is not offered', async () => {
+  const on = await call('GET', '/providers/codex/models')
+  assert.strictEqual(on.status, 200)
+  const [m] = on.body.models
+  assert.deepStrictEqual([m.model, m.enabled, m.offered, m.reason, m.agent], ['gpt-test', true, true, null, 'gpt-test'])
+  assert.strictEqual(on.body.pending, false)
+
+  const logFrom = daemonLog().length
+  writeConfig(goodConfig({ disabled: ['gpt-test'], models: ['gpt-*'] }))
+  const off = (await call('GET', '/providers/codex/models')).body.models[0]
+  assert.deepStrictEqual([off.enabled, off.offered, off.reason], [false, false, 'disabled'])
+  assert.deepStrictEqual((await call('GET', '/agents')).body.agents, [])
+  // A changed model list must not restart the app.
+  assert.doesNotMatch(daemonLog().slice(logFrom), /provider codex: config changed/)
+
+  writeConfig(goodConfig())
+  assert.deepStrictEqual((await call('GET', '/agents')).body.agents.map((a: any) => a.name), ['gpt-test'])
+  const zcode = (await call('GET', '/providers/zcode/models')).body
+  assert.deepStrictEqual(zcode.models, [])
+  assert.match(zcode.error, /ZCode/)
+  assert.strictEqual((await call('GET', '/providers/nope/models')).status, 404)
+})
+
+test('/stats/models gives one model its hourly rows, and only changes after a stamp', async () => {
+  const r = await call('GET', '/stats/models?provider=codex&model=gpt-test')
+  assert.strictEqual(r.status, 200)
+  assert.ok(r.body.rows.length >= 1 && r.body.stamp > 0, JSON.stringify(r.body))
+  const turns = r.body.rows.reduce((n: number, x: any) => n + x.turns, 0)
+  assert.ok(turns >= 1)
+  assert.deepStrictEqual((await call('GET', `/stats/models?provider=codex&model=gpt-test&since=${r.body.stamp}`)).body.rows, [])
+  assert.strictEqual((await call('GET', '/stats/models?provider=codex')).status, 400)
+  assert.strictEqual((await call('GET', '/stats/models?provider=nope&model=x')).status, 404)
+  assert.strictEqual((await call('POST', '/viewers/screen')).body.ok, true)
+  assert.strictEqual((await call('DELETE', '/viewers/screen')).status, 200)
+  assert.strictEqual((await call('GET', '/viewers/screen')).status, 404)
+})
+
+test('/subagents pages earlier subagents newest first, watches only given rows, and /status says when the helper started', async () => {
+  const r = await call('GET', '/subagents?recent=3')
+  assert.strictEqual(r.status, 200)
+  assert.ok(Array.isArray(r.body.running))
+  assert.ok(r.body.recent.length > 0 && r.body.recent.length <= 3)
+  const first = r.body.recent[0]
+  assert.deepStrictEqual([first.harness, first.harnessName, first.model, first.running], ['codex', 'Codex', 'gpt-test', false])
+  assert.ok(first.turns >= 1 && first.changedAt > 0, JSON.stringify(first))
+  assert.ok(r.body.recent.every((x: any, i: number, all: any[]) => i === 0 || all[i - 1].createdAt >= x.createdAt))
+  assert.strictEqual((await call('GET', '/subagents?recent=-5')).body.recent.length, 1)
+  const page = await call('GET', '/subagents/page?limit=1')
+  assert.strictEqual(page.body.rows.length, 1)
+  assert.ok(page.body.total >= r.body.recent.length, JSON.stringify(page.body.total))
+  const at = `${page.body.rows[0].createdAt}:${page.body.rows[0].id}`
+  const next = await call('GET', `/subagents/page?before=${encodeURIComponent(at)}&limit=500`)
+  assert.ok(next.body.rows.every((x: any) => x.id !== page.body.rows[0].id))
+  assert.strictEqual(next.body.more, false)
+  const seen = await call('GET', `/subagents/changed?ids=${first.id}&since=0`)
+  assert.deepStrictEqual(seen.body.rows.map((x: any) => x.id), [first.id])
+  const quiet = await call('GET', `/subagents/changed?ids=${first.id}&since=${seen.body.stamp}&top=${encodeURIComponent(`${first.createdAt}:${first.id}`)}`)
+  assert.deepStrictEqual([quiet.body.rows, quiet.body.newer], [[], []])
+  assert.ok((await call('GET', '/status')).body.startedAt <= Date.now())
+})
+
 // Last: it replaces the helper this file started with one of its own.
 test('restart replaces an idle helper with a new one', async () => {
   const before = (await call('GET', '/health')).body.pid

@@ -457,6 +457,35 @@ test('turn.step replays the foreign session as chunks, tool calls and a handback
   expect(w.bottomSteps).toEqual([])
 })
 
+test('a search the host has no tool for is replayed as the rg command it amounts to', { timeoutMs: 20000 }, async ($, on) => {
+  const w = world(on)
+  await start($)
+  const output = 'Found 2 files\nsrc/a.ts\nsrc/b.ts'
+  w.fake.queue.push({
+    events: [
+      { type: 'tool_started', seq: 1, itemId: 'grep-1', name: 'Grep', input: { pattern: "it's", glob: '*.ts', path: '/proj' } },
+      { type: 'tool_completed', seq: 2, itemId: 'grep-1', name: 'Grep', input: { pattern: "it's", glob: '*.ts', path: '/proj' }, ok: true, output },
+      { type: 'turn_completed', seq: 3, status: 'completed', finalText: 'Done.' },
+    ],
+    items: {},
+    approvals: [],
+  })
+  const spawned = await spawn($, 'find it')
+  w.rows[spawned.agentId] = [{ role: 'user', text: 'find it', toolUses: [] }]
+  w.api[spawned.agentId] = [{ role: 'user', content: [{ type: 'text', text: 'End with a SubagentHandback(...) call.' }] }]
+  const s1 = await step($, spawned.agentId, 0)
+  // The plugin falls back to Bash when the host can't list its tools, as here.
+  const hasGrep = typeof $.tool?.list === 'function' && (await $.tool.list()).some((t: any) => t.name === 'Grep')
+  const call = await toolCall($, spawned.agentId, { name: toolChunk(s1.chunks).name, id: toolChunk(s1.chunks).id, input: inputOf(s1.chunks) })
+  if (hasGrep) {
+    expect(toolChunk(s1.chunks).name).toBe('Grep')
+  } else {
+    expect(toolChunk(s1.chunks).name).toBe('Bash')
+    expect(inputOf(s1.chunks)).toEqual({ command: "rg -n 'it'\\''s' -g '*.ts' '/proj'", description: "Search for it's" })
+    expect(call).toEqual({ result: { stdout: output, stderr: '', interrupted: false, noOutputExpected: false } })
+  }
+})
+
 test('a permission request reaches the user and the decision is posted back', { timeoutMs: 20000 }, async ($, on) => {
   const w = world(on)
   await start($)

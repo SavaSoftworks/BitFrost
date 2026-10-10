@@ -9,7 +9,8 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { Store } from '../store.ts'
+import { Store, hourOf } from '../store.ts'
+import { summarize } from '../usage.ts'
 import { Session } from '../session.ts'
 
 function setup(t: any) {
@@ -46,7 +47,7 @@ test('push writes sessions, native refs, turns, events, messages and usage throu
   finish(s, 't')
   const reader = new Store(file)
   try {
-    assert.equal(reader.db.prepare('PRAGMA user_version').get()!.user_version, 3)
+    assert.equal(reader.db.prepare('PRAGMA user_version').get()!.user_version, 8)
     assert.equal(reader.db.prepare('PRAGMA journal_mode').get()!.journal_mode, 'wal')
     assert.equal(reader.db.prepare('PRAGMA busy_timeout').get()!.timeout, 5000)
     assert.equal(reader.db.prepare('PRAGMA foreign_keys').get()!.foreign_keys, 1)
@@ -332,7 +333,7 @@ test('version one schema upgrades and backfills approvals without native item id
     restored.activeTurnId = 't'
     restored.push({ type: 'approval_resolved', approvalId: 'approval', decision: 'deny' })
     assert.equal(upgraded.message('s', 'native')!.status, 'declined')
-    assert.equal(upgraded.db.prepare('PRAGMA user_version').get()!.user_version, 3)
+    assert.equal(upgraded.db.prepare('PRAGMA user_version').get()!.user_version, 8)
   } finally { upgraded.close() }
 })
 
@@ -343,7 +344,7 @@ test('version two adds per-session client input ids and keeps legacy receipts', 
   const upgraded = new Store(file)
   try {
     assert.equal(upgraded.degraded, false)
-    assert.equal(upgraded.db.prepare('PRAGMA user_version').get()!.user_version, 3)
+    assert.equal(upgraded.db.prepare('PRAGMA user_version').get()!.user_version, 8)
     assert.equal(upgraded.pending('s')[0].id, legacy.id)
     assert.equal(upgraded.pending('s')[0].client_input_id, null)
     const restored = Session.load('s', upgraded)!
@@ -374,4 +375,314 @@ test('client input receipts survive event retention and a store reopen', async (
     assert.deepEqual(await restored.deliver(provider, 'retry', 'interrupt', 'claude', 'client'), { inputId: input.id, delivery: 'started' })
     assert.equal(restored.lastSeq, s.lastSeq)
   } finally { reader.close() }
+})
+
+const usageOf = (store: Store, model = 'm', harness = 'fake') => summarize(model, store.usageRows(harness, model).rows)
+
+test('usage rolls up by hour, sums into the periods, and outlives retention', (t) => {
+  const { store, session } = setup(t)
+  const s = session()
+  s.push({ type: 'turn_started', turnId: 't1' })
+  s.push({ type: 'usage', inputTokens: 100, outputTokens: 20, cachedInputTokens: 10 })
+  finish(s, 't1')
+  s.push({ type: 'turn_started', turnId: 't2' })
+  // A new request bills its whole input; a repeated report of it only adds output not yet counted.
+  s.push({ type: 'usage', inputTokens: 105, outputTokens: 5, cachedInputTokens: 100 })
+  s.push({ type: 'usage', inputTokens: 105, outputTokens: 7, cachedInputTokens: 100 })
+  s.push({ type: 'turn_completed', turnId: 't2', status: 'failed', reason: 'error', finalText: '' })
+  const row = usageOf(store)
+  assert.deepEqual({ ...row.total, turnMs: 0 }, { sessions: 1, closedSessions: 0, sessionMs: 0, turns: 2, failedTurns: 1, turnMs: 0, requests: 2, inputTokens: 205, outputTokens: 27, cachedTokens: 110 })
+  assert.deepEqual([row.today, row.week, row.month], [row.total, row.total, row.total])
+  assert.equal(row.hourly[new Date().getHours()].tokens, 232)
+  assert.equal(row.daily.length, 30)
+  assert.equal(row.daily.at(-1)!.tokens, 232)
+  assert.equal(store.subagentsById([s.info.id])[0].tokens, 232)
+  const now = Date.now()
+  s.info.closedAt = now - 400 * 86400_000
+  s.info.updatedAt = s.info.closedAt
+  s.save()
+  store.retain(undefined, now)
+  assert.equal(store.db.prepare('SELECT COUNT(*) AS n FROM sessions').get()!.n, 0)
+  assert.equal(usageOf(store).total.inputTokens, 205)
+  assert.deepEqual(store.usageRows('other', 'm').rows, [])
+})
+
+test('usage outside the last week counts toward the month and total only', (t) => {
+  const { store } = setup(t)
+  const old = Date.now() - 20 * 86400_000
+  store.db.prepare('INSERT INTO usage_hours (harness,model,hour,sessions,input_tokens,output_tokens,first_at,last_at,updated_at) VALUES (?,?,?,3,10,10,?,?,1)').run('fake', 'm', hourOf(old), old, old)
+  const row = usageOf(store)
+  assert.deepEqual([row.total.sessions, row.month.sessions, row.week.sessions, row.today.sessions], [3, 3, 0, 0])
+  assert.equal(row.daily.reduce((n, d) => n + d.sessions, 0), 3)
+})
+
+test('asking for usage since a stamp returns only rows changed after it', (t) => {
+  const { store, session } = setup(t)
+  const s = session()
+  s.push({ type: 'turn_started', turnId: 't' })
+  s.push({ type: 'usage', inputTokens: 1, outputTokens: 1, cachedInputTokens: 0 })
+  const first = store.usageRows('fake', 'm')
+  assert.equal(first.rows.length, 1)
+  assert.deepEqual(store.usageRows('fake', 'm', first.stamp).rows, [])
+  s.push({ type: 'usage', inputTokens: 2, outputTokens: 0, cachedInputTokens: 0 })
+  const next = store.usageRows('fake', 'm', first.stamp)
+  assert.equal(next.rows.length, 1)
+  assert.ok(next.stamp > first.stamp)
+  assert.equal(next.rows[0].input_tokens, 3)
+})
+
+test('a version 6 store gets back the cached input it took off turns whose events are gone', (t) => {
+  const { store, file, session } = setup(t)
+  const old = session('old'), recent = session('recent')
+  old.push({ type: 'turn_started', turnId: 'o' })
+  old.push({ type: 'usage', inputTokens: 1000, outputTokens: 50, cachedInputTokens: 900 })
+  finish(old, 'o')
+  recent.push({ type: 'turn_started', turnId: 'r' })
+  for (const input of [200, 300]) recent.push({ type: 'usage', inputTokens: input, outputTokens: 5, cachedInputTokens: input - 100 })
+  finish(recent, 'r')
+  // As version 6 left them: uncached input on the old turn, context growth on the recent one.
+  store.db.exec(`DELETE FROM events WHERE session_id='old'; UPDATE turns SET input_tokens=100 WHERE id='o'; UPDATE turns SET input_tokens=300 WHERE id='r';
+    ALTER TABLE sessions ADD COLUMN context INTEGER DEFAULT 0; PRAGMA user_version=6`)
+  const upgraded = new Store(file)
+  try {
+    const turns = upgraded.db.prepare("SELECT id, input_tokens FROM turns ORDER BY id").all().map((r: any) => [r.id, r.input_tokens])
+    assert.deepEqual(turns, [['o', 1000], ['r', 500]])
+    const byId = new Map(upgraded.subagentsById(['old', 'recent']).map((r) => [r.id, r.tokens]))
+    assert.deepEqual([byId.get('old'), byId.get('recent')], [1050, 510])
+    assert.ok(!(upgraded.db.prepare('PRAGMA table_info(sessions)').all() as any[]).some((c) => c.name === 'context'))
+  } finally { upgraded.close() }
+})
+
+test('a version 5 store counts repeated usage reports once, from the events it still has', (t) => {
+  const { store, file, session } = setup(t)
+  const s = session('kept'), gone = session('gone')
+  s.push({ type: 'turn_started', turnId: 'k' })
+  for (const input of [100, 150, 150]) s.push({ type: 'usage', inputTokens: input, outputTokens: 10, cachedInputTokens: 0 })
+  finish(s, 'k')
+  gone.push({ type: 'turn_started', turnId: 'g' })
+  gone.push({ type: 'usage', inputTokens: 80, outputTokens: 4, cachedInputTokens: 0 })
+  finish(gone, 'g')
+  // As version 5 counted: every report in full, and no request columns.
+  store.db.exec(`UPDATE turns SET input_tokens=400, output_tokens=30, requests=3 WHERE id='k'; UPDATE turns SET input_tokens=500 WHERE id='g';
+    DELETE FROM events WHERE session_id='gone'; ALTER TABLE sessions DROP COLUMN request_input; ALTER TABLE sessions DROP COLUMN request_output;
+    UPDATE usage_hours SET input_tokens=input_tokens*9; PRAGMA user_version=5`)
+  const upgraded = new Store(file)
+  try {
+    const byId = new Map(upgraded.subagentsById(['kept', 'gone']).map((r) => [r.id, r]))
+    assert.deepEqual([byId.get('kept')!.tokens, byId.get('gone')!.tokens], [250 + 20, 500 + 4])
+    const turn = upgraded.db.prepare("SELECT input_tokens, output_tokens, requests FROM turns WHERE id='k'").get() as any
+    assert.deepEqual([turn.input_tokens, turn.output_tokens, turn.requests], [250, 20, 2])
+    assert.equal(summarize('m', upgraded.usageRows('fake', 'm').rows).total.inputTokens, 750)
+    // A new turn bills its request even if its input is identical to the previous turn.
+    const again = Session.load('kept', upgraded)!
+    again.push({ type: 'turn_started', turnId: 'k2' })
+    again.push({ type: 'usage', inputTokens: 150, outputTokens: 10, cachedInputTokens: 0 })
+    assert.equal(upgraded.subagentsById(['kept'])[0].tokens, 430)
+    again.push({ type: 'usage', inputTokens: 170, outputTokens: 0, cachedInputTokens: 0 })
+    assert.equal(upgraded.subagentsById(['kept'])[0].tokens, 600)
+  } finally { upgraded.close() }
+})
+
+test('a store from before hourly usage rebuilds it from the sessions and turns it still has', (t) => {
+  const { store, file, session } = setup(t), s = session()
+  s.push({ type: 'turn_started', turnId: 't' })
+  s.push({ type: 'usage', inputTokens: 40, outputTokens: 2, cachedInputTokens: 0 })
+  finish(s, 't')
+  store.db.exec('DROP TABLE usage_hours; CREATE TABLE model_usage (day TEXT); PRAGMA user_version=4')
+  const upgraded = new Store(file)
+  try {
+    assert.equal(upgraded.degraded, false)
+    assert.equal(upgraded.db.prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE name='model_usage'").get()!.n, 0)
+    const row = usageOf(upgraded)
+    assert.deepEqual([row.total.sessions, row.total.turns, row.total.inputTokens, row.total.requests], [1, 1, 40, 1])
+    assert.equal(row.hourly[new Date().getHours()].tokens, 42)
+  } finally { upgraded.close() }
+})
+
+test('session time counts when a session closes, and a reopen takes it back', (t) => {
+  const { store, session } = setup(t)
+  const s = session()
+  s.info.createdAt = Date.now() - 60_000
+  s.save()
+  s.info.closedAt = Date.now()
+  s.save()
+  let total = usageOf(store).total
+  assert.equal(total.closedSessions, 1)
+  assert.ok(total.sessionMs >= 59_000 && total.sessionMs <= 61_000, String(total.sessionMs))
+  s.info.closedAt = null
+  s.save()
+  total = usageOf(store).total
+  assert.deepEqual([total.closedSessions, total.sessionMs, total.sessions], [0, 0, 1])
+})
+
+test('an empty or missing usage table is filled from stored sessions on start, once', (t) => {
+  const { store, file, session } = setup(t), s = session()
+  s.push({ type: 'turn_started', turnId: 't' })
+  s.push({ type: 'usage', inputTokens: 12, outputTokens: 3, cachedInputTokens: 0 })
+  finish(s, 't')
+  store.db.exec('DELETE FROM usage_hours')
+  let reopened = new Store(file)
+  try { assert.equal(usageOf(reopened).total.inputTokens, 12) } finally { reopened.close() }
+  reopened = new Store(file)
+  try { assert.equal(usageOf(reopened).total.inputTokens, 12, 'not counted twice') } finally { reopened.close() }
+  reopened = new Store(file)
+  reopened.db.exec('DROP TABLE usage_hours')
+  reopened.close()
+  reopened = new Store(file)
+  try { assert.equal(usageOf(reopened).total.turns, 1) } finally { reopened.close() }
+})
+
+test('the daily series reaches back to first use, up to a year', (t) => {
+  const { store } = setup(t)
+  const put = (daysAgo: number, model: string) => {
+    const at = Date.now() - daysAgo * 86400_000
+    store.db.prepare('INSERT INTO usage_hours (harness,model,hour,sessions,input_tokens,first_at,last_at,updated_at) VALUES (?,?,?,1,5,?,?,1)').run('fake', model, hourOf(at), at, at)
+  }
+  put(90, 'old')
+  put(800, 'ancient')
+  const old = usageOf(store, 'old')
+  assert.ok(old.daily.length >= 90 && old.daily.length <= 92, String(old.daily.length))
+  assert.equal(old.daily[0].tokens, 5)
+  const ancient = usageOf(store, 'ancient')
+  assert.equal(ancient.daily.length, 366)
+  assert.equal(ancient.total.inputTokens, 5)
+})
+
+test('sessions keep their own totals as events arrive, and old stores fill them once', (t) => {
+  const { store, file, session } = setup(t)
+  const s = session('worker')
+  s.push({ type: 'turn_started', turnId: 't' })
+  s.push({ type: 'tool_started', itemId: 'a', name: 'Read', input: {} })
+  s.push({ type: 'tool_completed', itemId: 'a', name: 'Read', input: {}, output: 'x', ok: true })
+  s.push({ type: 'command_started', itemId: 'b', command: 'ls', summary: 'List', cwd: s.info.cwd })
+  s.push({ type: 'usage', inputTokens: 30, outputTokens: 5, cachedInputTokens: 10 })
+  finish(s, 't')
+  const totals = () => (store.db.prepare('SELECT tokens,cached_tokens,turns,tool_calls FROM sessions WHERE id=?').get('worker') as any)
+  assert.deepEqual({ ...totals() }, { tokens: 35, cached_tokens: 10, turns: 1, tool_calls: 2 })
+  store.db.exec('ALTER TABLE sessions DROP COLUMN tokens; ALTER TABLE sessions DROP COLUMN tool_calls')
+  const reopened = new Store(file)
+  try {
+    const [row] = reopened.subagentsById(['worker'])
+    assert.deepEqual([row.tokens, row.cachedTokens, row.turns, row.toolCalls], [35, 10, 1, 2])
+  } finally { reopened.close() }
+})
+
+test('subagent pages go newest first by position, and only changed rows come back', (t) => {
+  const { store, session } = setup(t)
+  for (const [id, ago] of [['a', 50], ['b', 40], ['c', 30], ['d', 20], ['e', 10]] as const) {
+    const s = session(id)
+    s.info.createdAt = Date.now() - ago * 1000
+    s.save()
+  }
+  const first = store.subagentPage({ limit: 2, count: true })
+  assert.deepEqual([first.rows.map((r) => r.id), first.more, first.total], [['e', 'd'], true, 5])
+  assert.equal(store.subagentPage({ limit: 2 }).total, null)
+  const last = first.rows.at(-1)!
+  const second = store.subagentPage({ before: [last.createdAt, last.id], limit: 2 })
+  assert.deepEqual(second.rows.map((r) => r.id), ['c', 'b'])
+  const oldest = store.subagentPage({ oldest: true, limit: 2 })
+  assert.deepEqual(oldest.rows.map((r) => r.id), ['b', 'a'])
+  const up = store.subagentPage({ after: [second.rows[0].createdAt, second.rows[0].id], limit: 5 })
+  assert.deepEqual([up.rows.map((r) => r.id), up.more], [['e', 'd'], false])
+  const seen = store.subagentsChanged(['a', 'b', 'c'], 0)
+  assert.equal(seen.rows.length, 3)
+  assert.deepEqual(store.subagentsChanged(['a', 'b', 'c'], seen.stamp).rows, [])
+  const b = session('b')
+  b.push({ type: 'turn_started', turnId: 'tb' })
+  const changed = store.subagentsChanged(['a', 'b', 'c'], seen.stamp)
+  assert.deepEqual(changed.rows.map((r) => r.id), ['b'])
+  assert.ok(changed.rows[0].turnStartedAt)
+})
+
+
+test('request identities bill identical calls separately and repeated reports only by their growth', (t) => {
+  const { store, file, session } = setup(t)
+  const s = session()
+  s.push({ type: 'turn_started', turnId: 'first' })
+  const report = (requestId: string, outputTokens = 10, cachedInputTokens = 20) =>
+    s.push({ type: 'usage', requestId, inputTokens: 100, outputTokens, cachedInputTokens })
+  report('one')
+  report('one', 15, 25)
+  report('two')
+  report('one', 12) // A late, smaller report cannot undo or duplicate a bill.
+  finish(s, 'first')
+  s.push({ type: 'turn_started', turnId: 'second' })
+  report('three')
+  assert.deepEqual(store.summary(s).usage, { inputTokens: 300, outputTokens: 35, cachedTokens: 65, requests: 3 })
+  const reopened = new Store(file)
+  try {
+    const restored = Session.load('s', reopened)!
+    restored.push({ type: 'turn_started', turnId: 'resumed' })
+    restored.push({ type: 'usage', requestId: 'one', inputTokens: 100, outputTokens: 15, cachedInputTokens: 25 })
+    assert.deepEqual(reopened.summary(restored).usage, { inputTokens: 300, outputTokens: 35, cachedTokens: 65, requests: 3 })
+    restored.push({ type: 'usage', requestId: 'zero', inputTokens: 0, outputTokens: 3, cachedInputTokens: 0 })
+    assert.equal(reopened.summary(restored).usage.requests, 4, 'zero input is still a request')
+  } finally { reopened.close() }
+})
+
+test('context snapshots do not bill prompt-wide ACP usage repeatedly', (t) => {
+  const { store, session } = setup(t)
+  const s = session()
+  s.push({ type: 'turn_started', turnId: 't' })
+  const billing = { inputTokens: 0, outputTokens: 0, cachedInputTokens: 0, requests: 0 }
+  for (const inputTokens of [100, 200]) s.push({ type: 'usage', requestId: 't', inputTokens, outputTokens: 0, cachedInputTokens: 0, billing })
+  assert.equal(store.summary(s).usage.requests, 0)
+  s.push({ type: 'usage', requestId: 't', inputTokens: 200, outputTokens: 10, cachedInputTokens: 0,
+    billing: { inputTokens: 300, outputTokens: 10, cachedInputTokens: 50, requests: 2 } })
+  assert.deepEqual(store.summary(s).usage, { inputTokens: 300, outputTokens: 10, cachedTokens: 50, requests: 2 })
+})
+
+test('version 7 migration corrects repeated input across turns without losing expired usage', (t) => {
+  const { store, file, session } = setup(t)
+  const s = session()
+  for (const id of ['one', 'two']) {
+    s.push({ type: 'turn_started', turnId: id })
+    s.push({ type: 'usage', inputTokens: 100, outputTokens: 10, cachedInputTokens: 20 })
+    finish(s, id)
+  }
+  // Version 7 suppressed the second turn because the input count matched.
+  store.db.exec("UPDATE turns SET input_tokens=0,output_tokens=0,cached_tokens=0,requests=0 WHERE id='two'; UPDATE sessions SET tokens=110,cached_tokens=20; UPDATE usage_hours SET input_tokens=100,output_tokens=10,cached_tokens=20,requests=1; PRAGMA user_version=7")
+  const ancient = hourOf(Date.now() - 400 * 86400_000)
+  store.db.prepare('INSERT INTO usage_hours (harness,model,hour,input_tokens,output_tokens,requests,first_at,last_at,updated_at) VALUES (?,?,?,700,70,7,?,?,1)').run('fake', 'm', ancient, ancient, ancient)
+  const upgraded = new Store(file)
+  try {
+    assert.equal(upgraded.degraded, false)
+    const restored = Session.load('s', upgraded)!
+    assert.deepEqual(upgraded.summary(restored).usage, { inputTokens: 200, outputTokens: 20, cachedTokens: 40, requests: 2 })
+    const total = summarize('m', upgraded.usageRows('fake', 'm').rows).total
+    assert.deepEqual([total.inputTokens, total.outputTokens, total.requests], [900, 90, 9])
+    assert.equal(upgraded.db.prepare('SELECT COUNT(*) AS n FROM usage_requests').get()!.n, 2)
+  } finally { upgraded.close() }
+})
+
+
+test('version 7 migration preserves the expired prefix of a turn and corrects a later retained turn', (t) => {
+  for (const removeWholeTurn of [false, true]) {
+    const { store, file, session } = setup(t)
+    const s = session()
+    s.push({ type: 'turn_started', turnId: 'first' })
+    for (const inputTokens of [1000, 1200]) s.push({ type: 'usage', inputTokens, outputTokens: inputTokens === 1000 ? 10 : 20, cachedInputTokens: 0 })
+    finish(s, 'first')
+    s.push({ type: 'turn_started', turnId: 'second' })
+    s.push({ type: 'usage', inputTokens: 1200, outputTokens: 20, cachedInputTokens: 0 })
+    finish(s, 'second')
+    store.db.exec("UPDATE turns SET input_tokens=0,output_tokens=0,requests=0 WHERE id='second'; UPDATE sessions SET tokens=2230; UPDATE usage_hours SET input_tokens=2200,output_tokens=30,requests=2; PRAGMA user_version=7")
+    store.db.exec(removeWholeTurn ? "DELETE FROM events WHERE turn_id='first'" : "DELETE FROM events WHERE seq<=2")
+    const upgraded = new Store(file)
+    try {
+      assert.equal(upgraded.degraded, false)
+      const usage = upgraded.summary(Session.load('s', upgraded)!).usage
+      assert.deepEqual([usage.inputTokens, usage.outputTokens, usage.requests], [3400, 50, 3])
+      const total = summarize('m', upgraded.usageRows('fake', 'm').rows).total
+      assert.deepEqual([total.inputTokens, total.outputTokens, total.requests], [3400, 50, 3])
+    } finally { upgraded.close() }
+  }
+})
+
+test('legacy usage groups only adjacent equal reports within a turn', (t) => {
+  const { store, session } = setup(t)
+  const s = session()
+  s.push({ type: 'turn_started', turnId: 't' })
+  for (const inputTokens of [100, 200, 100, 100]) s.push({ type: 'usage', inputTokens, outputTokens: 10, cachedInputTokens: 0 })
+  assert.deepEqual(store.summary(s).usage, { inputTokens: 400, outputTokens: 30, cachedTokens: 0, requests: 3 })
 })
