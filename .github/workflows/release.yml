@@ -38,7 +38,7 @@ jobs:
       - run: claude plugin validate plugins/bitfrost
       - run: npm test
       - name: Check the shell scripts
-        run: shellcheck release/install.sh release/build.sh release/build-tui.sh release/build-migrations.sh release/build-cpu.sh release/check.sh plugins/bitfrost/bin/bitfrostd
+        run: shellcheck release/*.sh plugins/bitfrost/bin/bitfrostd
       - name: Build the tarball
         run: |
           release/build.sh --no-tui --no-migrator

@@ -115,8 +115,16 @@ int bf_column(const char *table, const char *column) {
     return rc == SQLITE_ROW ? 1 : rc == SQLITE_DONE ? 0 : -1;
 }
 
-/* Match JavaScript's local Date constructor, including choosing the first
- * occurrence of an ambiguous autumn hour. SQLite's UTC arithmetic cannot. */
+static int compare_local(const struct tm *a, const struct tm *b) {
+    const int left[] = {a->tm_year, a->tm_yday, a->tm_hour, a->tm_min, a->tm_sec};
+    const int right[] = {b->tm_year, b->tm_yday, b->tm_hour, b->tm_min, b->tm_sec};
+    for (size_t i = 0; i < sizeof left / sizeof *left; ++i)
+        if (left[i] != right[i]) return left[i] < right[i] ? -1 : 1;
+    return 0;
+}
+
+/* Match JavaScript's local Date constructor: choose the earlier occurrence
+ * of a repeated hour, or advance through a skipped wall time by its gap. */
 static void local_hour(sqlite3_context *ctx, int argc, sqlite3_value **values) {
     (void)argc;
     if (sqlite3_value_type(values[0]) == SQLITE_NULL) { sqlite3_result_null(ctx); return; }
@@ -125,16 +133,26 @@ static void local_hour(sqlite3_context *ctx, int argc, sqlite3_value **values) {
     struct tm local;
     if (!localtime_r(&seconds, &local)) { sqlite3_result_error(ctx, "Invalid timestamp", -1); return; }
     local.tm_min = local.tm_sec = 0;
-    local.tm_isdst = -1;
-    time_t selected = mktime(&local);
-    for (int dst = 0; dst <= 1; ++dst) {
+    time_t selected = 0;
+    struct tm selected_local = {0};
+    int found = 0;
+    for (int dst = -1; dst <= 1; ++dst) {
+        /* mktime mutates its argument, and musl and glibc can normalize a
+         * gap in opposite directions. Always start from the requested time. */
         struct tm trial = local, check;
         trial.tm_isdst = dst;
+        errno = 0;
         time_t value = mktime(&trial);
-        if (localtime_r(&value, &check) && check.tm_year == local.tm_year &&
-            check.tm_yday == local.tm_yday && check.tm_hour == local.tm_hour &&
-            check.tm_min == 0 && value < selected) selected = value;
+        if ((value == (time_t)-1 && errno == EOVERFLOW) || !localtime_r(&value, &check)) continue;
+        if (compare_local(&check, &local) < 0) continue;
+        int order = found ? compare_local(&check, &selected_local) : -1;
+        if (order < 0 || (order == 0 && value < selected)) {
+            selected = value;
+            selected_local = check;
+            found = 1;
+        }
     }
+    if (!found) { sqlite3_result_error(ctx, "Invalid local hour", -1); return; }
     sqlite3_result_int64(ctx, (sqlite3_int64)selected * 1000);
 }
 

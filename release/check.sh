@@ -1,64 +1,47 @@
 #!/bin/sh
-# Copyright (C) 2026 Nick Germaine
-# SPDX-License-Identifier: GPL-3.0-only
-#
-# BitFrost is free software: you can share and change it under the GNU General
-# Public License, version 3 only. It comes with no warranty. See LICENSE.
+# Copyright (C) 2026 Nick Germaine; SPDX-License-Identifier: GPL-3.0-only
+# Local checks. --native omits the additional release migration build.
+set -eu
+cd "$(dirname "$0")/.."
 
-# Quick checks before sending a change: the shell scripts, then the TUI build
-# and its tests when this machine has cmake and a C++ compiler. Anything
-# missing is skipped with a note, so the rest still runs.
+mode=${1:-all}
+case $mode in
+  all | --native | --style) [ $# -le 1 ] || exit 2 ;;
+  *) echo 'Usage: release/check.sh [--native|--style]' >&2; exit 2 ;;
+esac
 
-main() {
-  set -eu
-
-  cd "$(dirname "$0")/.."
-
-  failed=0
-
-  echo "Shell scripts"
-  for script in release/build.sh release/build-tui.sh release/build-migrations.sh release/build-cpu.sh release/check.sh release/install.sh plugins/bitfrost/bin/bitfrostd; do
-    if sh -n "$script"; then
-      ok "$script"
-    else
-      bad "$script (sh -n)"
-    fi
-  done
-  if command -v shellcheck >/dev/null 2>&1; then
-    if shellcheck release/build.sh release/build-tui.sh release/build-migrations.sh release/build-cpu.sh release/check.sh release/install.sh plugins/bitfrost/bin/bitfrostd; then
-      ok "shellcheck"
-    else
-      bad "shellcheck"
-    fi
-  else
-    skip "shellcheck (not installed)"
-  fi
-
-  echo "TUI"
-  if [ ! -f tui/CMakeLists.txt ]; then
-    skip "no TUI sources in this checkout"
-  elif ! command -v cmake >/dev/null 2>&1; then
-    skip "cmake not installed"
-  elif ! command -v c++ >/dev/null 2>&1 && ! command -v g++ >/dev/null 2>&1 && ! command -v clang++ >/dev/null 2>&1; then
-    skip "no C++ compiler"
-  else
-    if ./release/build-tui.sh && ctest --test-dir tui/build --output-on-failure; then
-      ok "build and ctest"
-    else
-      bad "build and ctest"
-    fi
-  fi
-
-  if [ "$failed" -eq 0 ]; then
-    echo "All checks passed"
-  else
-    echo "$failed check(s) failed"
-    exit 1
-  fi
+require() {
+  command -v "$1" >/dev/null 2>&1 || { echo "check.sh: required command missing: $1" >&2; exit 1; }
+}
+style() {
+  require clang-format
+  major=$(clang-format --version | sed -n 's/.*version \([0-9]*\).*/\1/p')
+  [ "${major:-0}" -ge 23 ] || { echo 'check.sh: clang-format 23 or newer is required' >&2; exit 1; }
+  find tui/src tui/tests \( -name '*.cpp' -o -name '*.hpp' \) -exec clang-format --dry-run --Werror {} +
 }
 
-ok() { printf '  ok   %s\n' "$1"; }
-skip() { printf '  skip %s\n' "$1"; }
-bad() { printf '  FAIL %s\n' "$1"; failed=$((failed + 1)); }
+echo 'C++ style'
+style
+[ "$mode" != --style ] || exit 0
+for command in shellcheck node npm claude cobc cmake ctest python3; do require "$command"; done
+if [ "$mode" = all ]; then
+  ./release/check-migrations.sh --preflight
+fi
 
-main "$@"
+echo 'Shell scripts'
+for script in release/*.sh plugins/bitfrost/bin/bitfrostd; do sh -n "$script"; done
+shellcheck release/*.sh plugins/bitfrost/bin/bitfrostd
+
+echo 'Plugin validation, daemon, migration and plugin tests (native)'
+claude plugin validate plugins/bitfrost
+npm test
+echo 'TUI build and terminal tests (native)'
+./release/build-tui.sh
+ctest --test-dir tui/build --output-on-failure
+
+if [ "$mode" = --native ]; then
+  echo 'Native checks passed. Release migration builds and other platforms were not checked.'
+else
+  ./release/check-migrations.sh
+  echo 'Local checks passed. CI also checks the Alpine TUI, other architectures and release installation.'
+fi

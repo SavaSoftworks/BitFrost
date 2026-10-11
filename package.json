@@ -6,6 +6,9 @@
   "dbVersion": 8,
   "scripts": {
     "check": "release/check.sh",
+    "check:native": "release/check.sh --native",
+    "check:ci:linux": "release/check-linux.sh all",
+    "check:migrations": "release/check-migrations.sh",
     "test": "npm run test:daemon && npm run test:plugin",
     "test:daemon": "release/build-migrations.sh && node --test --disable-warning=ExperimentalWarning 'plugins/bitfrost/daemon/test/*.spec.ts'",
     "test:plugin": "claude plugin test plugins/bitfrost"

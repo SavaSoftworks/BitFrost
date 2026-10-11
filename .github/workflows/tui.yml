@@ -33,14 +33,7 @@ jobs:
       # Fully static with musl, so one binary runs on any Linux.
       - name: Build and test (static, in Alpine)
         if: runner.os == 'Linux'
-        run: >
-          docker run --rm --volume "$PWD:/src" --workdir /src --env "OWNER=$(id -u):$(id -g)" alpine:3.22 sh -c
-          'apk add --no-cache g++ cmake make linux-headers python3 nodejs-current &&
-          ./release/build-tui.sh --static dist/bitfrost-tui &&
-          ctest --test-dir tui/build --output-on-failure;
-          status=$?;
-          chown -R "$OWNER" dist tui/build 2>/dev/null;
-          exit $status'
+        run: ./release/check-linux.sh tui
       # The terminal tests' sample broker runs BitFrost's TypeScript, which needs Node 23.6 or newer.
       - uses: actions/setup-node@v4
         if: runner.os == 'macOS'
@@ -60,7 +53,7 @@ jobs:
           ./dist/bitfrost-tui --selftest
           case $(uname -s) in
             Linux)
-              file dist/bitfrost-tui | grep -q 'statically linked'
+              file dist/bitfrost-tui | grep -Eq 'statically linked|static-pie linked'
               ;;
             Darwin)
               lipo -info dist/bitfrost-tui | grep -q x86_64
@@ -87,9 +80,4 @@ jobs:
         run: |
           python3 -m pip install --user --break-system-packages clang-format
           export PATH="$(python3 -m site --user-base)/bin:$PATH"
-          major=$(clang-format --version | sed -n 's/.*version \([0-9]*\).*/\1/p')
-          if [ "${major:-0}" -lt 23 ]; then
-            echo "::warning::clang-format $major is older than 23, which tui/.clang-format needs; style not checked"
-            exit 0
-          fi
-          find tui/src tui/tests \( -name '*.cpp' -o -name '*.hpp' \) -print0 | xargs -0 clang-format --dry-run --Werror
+          ./release/check.sh --style

@@ -274,14 +274,24 @@ test('migration hour buckets match live writes across repeated hours and unusual
     for (const zone of ['UTC', 'America/New_York', 'America/Halifax', 'Australia/Lord_Howe', 'Pacific/Chatham']) {
       process.env.TZ = zone
       const times = [-1, 0, Date.parse('2026-11-01T05:30:00Z'), Date.parse('2026-11-01T06:30:00Z'),
-        Date.parse('2026-04-04T15:15:00Z'), Date.parse('2026-10-03T15:35:00Z')]
-      const { dir, file } = fixture(t)
-      const sql = 'CREATE TABLE hours(at INTEGER,hour INTEGER);' + times.map((at) =>
-        `INSERT INTO hours VALUES (${at},local_hour(${at}));`).join('')
-      const versions = versionTree(dir, { [NEXT]: sql })
-      migrate(file, versions)
+        Date.parse('2026-04-04T15:15:00Z'), Date.parse('2026-10-03T15:29:59Z'),
+        Date.parse('2026-10-03T15:30:00Z'), Date.parse('2026-10-03T15:35:00Z'),
+        Date.parse('2026-09-26T14:10:00Z')]
+      const { file } = fixture(t)
+      const db = new DatabaseSync(file)
+      db.exec(fs.readFileSync(path.join(coreVersions, 'v1', 'schema.sql'), 'utf8'))
+      const insert = db.prepare('INSERT INTO sessions(id,harness,model,created_at) VALUES (?,\'fake\',?,?)')
+      times.forEach((at, i) => insert.run(`s${i}`, `m${i}`, at))
+      db.exec('PRAGMA user_version=1')
+      db.close()
+      // Exercise the shipped engine (including a supplied static musl build),
+      // rather than the native extension binary compiled by this test suite.
+      migrate(file)
       read(file, (db) => {
-        for (const row of db.prepare('SELECT * FROM hours').all())
+        const rows = db.prepare(`SELECT s.created_at AS at,h.hour FROM sessions s
+          JOIN usage_hours h ON h.harness=s.harness AND h.model=s.model WHERE h.sessions>0`).all()
+        assert.equal(rows.length, times.length)
+        for (const row of rows)
           assert.equal(row.hour, hourOf(Number(row.at)), `${zone}: ${row.at}`)
       })
     }
