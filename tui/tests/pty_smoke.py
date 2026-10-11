@@ -23,6 +23,56 @@ import time
 import unicodedata
 
 
+def terminal_settings(fd):
+    settings = termios.tcgetattr(fd)
+    # BSD sets PENDIN when restoring ICANON, even with an empty input queue.
+    # It is kernel bookkeeping; all actual mode flags, speeds and cc values must match.
+    settings[3] &= ~getattr(termios, "PENDIN", 0)
+    return settings
+
+
+def assert_terminal_restored(fd, expected, message):
+    actual = terminal_settings(fd)
+    assert actual == expected, f"{message}: expected {expected!r}, got {actual!r}"
+
+
+def wait_stopped(process, drain):
+    deadline = time.monotonic() + 3
+    while time.monotonic() < deadline:
+        pid, status = os.waitpid(process.pid, os.WNOHANG | os.WUNTRACED)
+        if pid:
+            if os.WIFSTOPPED(status):
+                assert os.WSTOPSIG(status) == signal.SIGSTOP, "UI stopped on an unexpected signal"
+                drain(0.02)
+                return
+            process.returncode = os.waitstatus_to_exitcode(status)
+            raise AssertionError("UI exited instead of suspending")
+        drain(0.02)
+    raise AssertionError("UI did not stop after suspend")
+
+
+def cleanup_process(process, master):
+    if process.poll() is not None:
+        return
+    process.terminate()
+    try:
+        os.kill(process.pid, signal.SIGCONT)
+    except ProcessLookupError:
+        pass
+    # A resumed TUI may be writing its new frame. Keep the PTY flowing so the
+    # event loop can handle SIGTERM, and preserve the assertion if cleanup stalls.
+    deadline = time.monotonic() + 3
+    while process.poll() is None and time.monotonic() < deadline:
+        if select.select([master], [], [], 0.05)[0]:
+            try:
+                os.read(master, 65536)
+            except OSError:
+                break
+    if process.poll() is None:
+        process.kill()
+    process.wait(timeout=3)
+
+
 class Screen:
     def __init__(self, width=120, height=40):
         self.width, self.height = width, height
@@ -150,7 +200,7 @@ class Screen:
 def run(binary, broker, measure=False, snapshots=None, no_anim=False):
     master, slave = pty.openpty()
     fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 120, 0, 0))
-    original = termios.tcgetattr(slave)
+    original = terminal_settings(slave)
     screen = Screen()
     output = bytearray()
     with tempfile.TemporaryDirectory(prefix="bitfrost-tui-test-") as temporary:
@@ -242,9 +292,9 @@ def run(binary, broker, measure=False, snapshots=None, no_anim=False):
                     os.write(master, action)
                 else:
                     os.kill(process.pid, action)
-                drain(0.12)
+                wait_stopped(process, drain)
                 assert disabled in output[before:], "Home suspend did not disable mouse"
-                assert termios.tcgetattr(slave) == original, "Home suspend did not restore terminal"
+                assert_terminal_restored(slave, original, "Home suspend did not restore terminal")
                 before = len(output)
                 os.kill(process.pid, signal.SIGCONT)
                 drain(0.12)
@@ -809,13 +859,14 @@ def run(binary, broker, measure=False, snapshots=None, no_anim=False):
                 >= 2
             ), "Pending discovery did not refresh"
             os.kill(process.pid, signal.SIGTSTP)
-            drain(0.15)
-            assert termios.tcgetattr(slave) == original, "Suspend did not restore terminal"
+            wait_stopped(process, drain)
+            assert_terminal_restored(slave, original, "Suspend did not restore terminal")
             os.kill(process.pid, signal.SIGCONT)
             drain(0.15)
-            assert termios.tcgetattr(slave) != original, "Continue did not reenter raw mode"
-            key(b"\x1a", 0.15)
-            assert termios.tcgetattr(slave) == original, "Ctrl-Z did not restore terminal"
+            assert terminal_settings(slave) != original, "Continue did not reenter raw mode"
+            os.write(master, b"\x1a")
+            wait_stopped(process, drain)
+            assert_terminal_restored(slave, original, "Ctrl-Z did not restore terminal")
             os.kill(process.pid, signal.SIGCONT)
             drain(0.15)
             fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 80, 0, 0))
@@ -827,7 +878,7 @@ def run(binary, broker, measure=False, snapshots=None, no_anim=False):
             process.wait(timeout=3)
             drain(0.05)
             assert process.returncode == 0, "UI did not exit cleanly"
-            assert termios.tcgetattr(slave) == original, "Terminal settings were not restored"
+            assert_terminal_restored(slave, original, "Terminal settings were not restored")
             assert b"\x1b[?25h\x1b[?1049l" in output, "Cursor or alternate screen was not restored"
             assert disabled in output and output.rfind(disabled) > output.rfind(enabled), "Exit did not disable mouse"
             metrics.update(
@@ -839,10 +890,7 @@ def run(binary, broker, measure=False, snapshots=None, no_anim=False):
             )
             print(json.dumps(metrics, indent=2))
         finally:
-            if process.poll() is None:
-                os.kill(process.pid, signal.SIGCONT)
-                process.terminate()
-                process.wait(timeout=3)
+            cleanup_process(process, master)
             os.close(master)
             os.close(slave)
 
@@ -861,7 +909,7 @@ def check_error_page_and_signals(binary):
     for action in (b"\x1b", b"\x03", signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
         master, slave = pty.openpty()
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 80, 0, 0))
-        original = termios.tcgetattr(slave)
+        original = terminal_settings(slave)
         process = subprocess.Popen([str(binary)], stdin=slave, stdout=slave, stderr=slave, env=env)
         data = bytearray()
         try:
@@ -880,11 +928,9 @@ def check_error_page_and_signals(binary):
                 os.kill(process.pid, action)
             process.wait(timeout=3)
             assert process.returncode == 0, "Signal or escape did not exit cleanly"
-            assert termios.tcgetattr(slave) == original, "Signal or escape did not restore terminal"
+            assert_terminal_restored(slave, original, "Signal or escape did not restore terminal")
         finally:
-            if process.poll() is None:
-                process.terminate()
-                process.wait(timeout=3)
+            cleanup_process(process, master)
             os.close(master)
             os.close(slave)
     print("Missing-helper page, escape deadline, Ctrl-C, signal cleanup and Apple color fallback passed")
@@ -897,7 +943,7 @@ def check_mouse_signal_cleanup(binary):
     for action in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP, signal.SIGABRT, signal.SIGSEGV,
                    signal.SIGBUS, signal.SIGILL, signal.SIGFPE):
         master, slave = pty.openpty()
-        original = termios.tcgetattr(slave)
+        original = terminal_settings(slave)
         process = subprocess.Popen(
             [str(binary)], stdin=slave, stdout=slave, stderr=slave, env=env,
             preexec_fn=lambda: resource.setrlimit(resource.RLIMIT_CORE, (0, 0)),
@@ -916,11 +962,9 @@ def check_mouse_signal_cleanup(binary):
                 data.extend(os.read(master, 65536))
             assert b"\x1b[?1003l\x1b[?1006l" in data, "Signal did not disable mouse"
             assert b"\x1b[?25h\x1b[?1049l" in data, "Signal did not restore cursor and screen"
-            assert termios.tcgetattr(slave) == original, "Signal did not restore termios"
+            assert_terminal_restored(slave, original, "Signal did not restore termios")
         finally:
-            if process.poll() is None:
-                process.terminate()
-                process.wait(timeout=3)
+            cleanup_process(process, master)
             os.close(master)
             os.close(slave)
     print("Animated mouse signal and crash cleanup passed")
@@ -931,7 +975,7 @@ def check_mouse_opt_out(binary):
                                   (["--no-mouse", "--no-anim"], {}),
                                   (["--no-mouse", "--no-anim", "--resume"], {})):
         master, slave = pty.openpty()
-        original = termios.tcgetattr(slave)
+        original = terminal_settings(slave)
         env = dict(os.environ, TERM="xterm-256color")
         for name in ("BITFROST_TUI_BROKER", "BITFROST_NODE", "BITFROST_ENTRY", "BITFROST_NO_MOUSE", "BITFROST_NO_ANIM"):
             env.pop(name, None)
@@ -951,20 +995,17 @@ def check_mouse_opt_out(binary):
             if "--resume" in arguments:
                 assert b"\x1b[2J" not in data and b"\x1b[?1049h" in data, "Standalone resume cleared instead of drawing its frame"
             os.kill(process.pid, signal.SIGTSTP)
-            drain(0.12)
-            assert termios.tcgetattr(slave) == original, "Mouse opt-out suspend did not restore terminal"
+            wait_stopped(process, drain)
+            assert_terminal_restored(slave, original, "Mouse opt-out suspend did not restore terminal")
             os.kill(process.pid, signal.SIGCONT)
             drain(0.12)
             os.kill(process.pid, signal.SIGTERM)
             process.wait(timeout=3)
             drain(0.05)
-            assert termios.tcgetattr(slave) == original, "Mouse opt-out exit did not restore terminal"
+            assert_terminal_restored(slave, original, "Mouse opt-out exit did not restore terminal")
             assert b"\x1b[?1003" not in data and b"\x1b[?1006" not in data, "Mouse opt-out sent mouse modes"
         finally:
-            if process.poll() is None:
-                os.kill(process.pid, signal.SIGCONT)
-                process.terminate()
-                process.wait(timeout=3)
+            cleanup_process(process, master)
             os.close(master)
             os.close(slave)
     print("Mouse opt-out flag, environment and static mode passed")
@@ -973,7 +1014,7 @@ def check_mouse_opt_out(binary):
 def run_mouse_path(binary, no_anim):
     master, slave = pty.openpty()
     fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 120, 0, 0))
-    original = termios.tcgetattr(slave)
+    original = terminal_settings(slave)
     screen, output = Screen(), bytearray()
     with tempfile.TemporaryDirectory(prefix="bitfrost-tui-mouse-") as temporary:
         log = Path(temporary) / "requests.ndjson"
@@ -1064,12 +1105,10 @@ def run_mouse_path(binary, no_anim):
             back(0.05)
             process.wait(timeout=3)
             drain(0.05)
-            assert process.returncode == 0 and termios.tcgetattr(slave) == original, "Mouse path did not restore terminal"
+            assert process.returncode == 0 and terminal_settings(slave) == original, "Mouse path did not restore terminal"
             assert output.rfind(b"\x1b[?1003l\x1b[?1006l") > output.rfind(b"\x1b[?1006h\x1b[?1003h"), "Mouse path exit left reporting on"
         finally:
-            if process.poll() is None:
-                process.terminate()
-                process.wait(timeout=3)
+            cleanup_process(process, master)
             os.close(master)
             os.close(slave)
     print("Mouse-only home, provider, model action, popup dismissal, wheel and Back path passed")
@@ -1078,7 +1117,7 @@ def run_mouse_path(binary, no_anim):
 def run_update_path(binary, no_anim, failure=None, no_mouse=False):
     master, slave = pty.openpty()
     fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 120, 0, 0))
-    original = termios.tcgetattr(slave)
+    original = terminal_settings(slave)
     screen, output = Screen(), bytearray()
     seen_steps = set()
     labels = ["Release", "Checksum", "Unpacked", "BitFrost TUI", "Command",
@@ -1158,7 +1197,7 @@ def run_update_path(binary, no_anim, failure=None, no_mouse=False):
                 assert output.count(b"\x1b[2J") == 1, "Reload cleared the terminal and flashed"
                 assert b"\x1b[?1003l" not in output and b"\x1b[?1006l" not in output, "Reload reset mouse modes"
                 assert "fake.closed" in [r.get("method") for r in recorded], "First broker did not exit on EOF"
-                assert process.poll() is None and termios.tcgetattr(slave) != original, "Resumed TUI is not running in raw mode"
+                assert process.poll() is None and terminal_settings(slave) != original, "Resumed TUI is not running in raw mode"
                 deadline = time.monotonic() + 2
                 while sum(r["method"] == "update.check" for r in requests()) < 2 and time.monotonic() < deadline:
                     drain(0.05)
@@ -1172,7 +1211,7 @@ def run_update_path(binary, no_anim, failure=None, no_mouse=False):
             os.write(master, b"q")
             process.wait(timeout=3)
             drain(0.05)
-            assert process.returncode == 0 and termios.tcgetattr(slave) == original, "Update path did not restore original terminal settings"
+            assert process.returncode == 0 and terminal_settings(slave) == original, "Update path did not restore original terminal settings"
             if no_mouse:
                 assert not any(sequence in output for sequence in
                                (b"\x1b[?1003h", b"\x1b[?1006h", b"\x1b[?1003l", b"\x1b[?1006l")), "Reload lost the command-line mouse opt-out"
@@ -1180,9 +1219,7 @@ def run_update_path(binary, no_anim, failure=None, no_mouse=False):
                 assert output.rfind(b"\x1b[?1003l\x1b[?1006l") > output.rfind(b"\x1b[?1006h\x1b[?1003h"), "Update path left mouse modes enabled"
             assert output.endswith(b"\x1b[?1049l"), "Update path did not leave alternate screen on quit"
         finally:
-            if process.poll() is None:
-                process.terminate()
-                process.wait(timeout=3)
+            cleanup_process(process, master)
             os.close(master)
             os.close(slave)
     print("Simulated update " + (failure + " fallback" if failure else "and in-place exec reload") +
