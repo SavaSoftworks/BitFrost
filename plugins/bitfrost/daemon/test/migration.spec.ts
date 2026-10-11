@@ -9,25 +9,32 @@ import { spawn, spawnSync } from 'node:child_process'
 import { migrate as migrateBase, migrationBinary, migrationRoot } from './migrate.ts'
 import { Store, hourOf } from '../store.ts'
 import { Session } from '../session.ts'
+import { DB_VERSION } from '../db-version.ts'
 
 const coreVersions = path.join(migrationRoot, 'versions')
+const NEXT = DB_VERSION + 1, LAST = DB_VERSION + 2
+const sequence = (first: number, last: number) => Array.from({ length: last - first + 1 }, (_, i) => first + i)
 let extensionRoot: string, extensionVersions: string, extensionBinary: string
 before(() => {
   extensionRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'bitfrost-migration-build-'))
   extensionVersions = path.join(extensionRoot, 'versions')
   fs.cpSync(coreVersions, extensionVersions, { recursive: true })
-  for (const version of [9, 10]) {
+  for (const version of [NEXT, LAST]) {
     const dir = path.join(extensionVersions, `v${version}`)
     fs.mkdirSync(dir)
-    // A folder is sufficient: the build discovers and registers this handler.
+    // The manifest sets the target; the build discovers each handler.
     const code = fs.readFileSync(path.join(coreVersions, 'v1', 'main.cob'), 'utf8')
       .replace('MIGRATION-V1.', `MIGRATION-V${version}.`)
     fs.writeFileSync(path.join(dir, 'main.cob'), code)
     fs.writeFileSync(path.join(dir, 'plan'), 'schema.sql\n')
     fs.writeFileSync(path.join(dir, 'schema.sql'), 'SELECT 1;')
+    fs.writeFileSync(path.join(dir, 'indexes.sql'), '')
   }
+  const manifest = path.join(extensionRoot, 'package.json')
+  fs.writeFileSync(manifest, JSON.stringify({ dbVersion: LAST }))
   const build = spawnSync('sh', [path.resolve('release/build-migrations.sh'),
-    '--versions', extensionVersions, '--build-dir', path.join(extensionRoot, 'build')], { encoding: 'utf8' })
+    '--versions', extensionVersions, '--package-json', manifest,
+    '--build-dir', path.join(extensionRoot, 'build')], { encoding: 'utf8' })
   assert.ifError(build.error)
   assert.equal(build.status, 0, build.stdout + build.stderr)
   extensionBinary = path.join(extensionRoot, 'build', 'bitfrost-migrate')
@@ -63,9 +70,9 @@ test('a fresh installation creates the current schema before any daemon starts; 
   const { dir, file } = fixture(t)
   assert.match(migrate(file), /migration complete/)
   read(file, (db) => {
-    assert.equal(db.prepare('PRAGMA user_version').get()!.user_version, 8)
+    assert.equal(db.prepare('PRAGMA user_version').get()!.user_version, DB_VERSION)
     assert.equal(db.prepare('SELECT COUNT(*) AS n FROM usage_hours').get()!.n, 0)
-    assert.deepEqual(db.prepare('SELECT version FROM schema_migrations ORDER BY version').all().map((r) => r.version), [1, 2, 3, 4, 5, 6, 7, 8])
+    assert.deepEqual(db.prepare('SELECT version FROM schema_migrations ORDER BY version').all().map((r) => r.version), sequence(1, DB_VERSION))
   })
   assert.equal(fs.existsSync(path.join(dir, 'daemon.lock')), false)
   assert.equal(fs.statSync(file).mode & 0o777, 0o600)
@@ -113,7 +120,7 @@ test('the actual v1 schema upgrades through each version while preserving histor
   db.close()
   migrate(file)
   read(file, (db) => {
-    assert.deepEqual(db.prepare('SELECT version FROM schema_migrations ORDER BY version').all().map((r) => r.version), [2, 3, 4, 5, 6, 7, 8])
+    assert.deepEqual(db.prepare('SELECT version FROM schema_migrations ORDER BY version').all().map((r) => r.version), sequence(2, DB_VERSION))
     assert.equal(db.prepare("SELECT approval_id FROM messages WHERE item_id='native'").get()!.approval_id, 'kept')
     assert.equal(db.prepare("SELECT approval_id FROM messages WHERE item_id='broken'").get()!.approval_id, null)
     assert.equal(db.prepare('SELECT text FROM inbox').get()!.text, 'kept')
@@ -130,7 +137,7 @@ test('older hourly schemas are replaced before rollups are populated', (t) => {
     store.close()
     migrate(file)
     read(file, (db) => {
-      assert.equal(db.prepare('PRAGMA user_version').get()!.user_version, 8)
+      assert.equal(db.prepare('PRAGMA user_version').get()!.user_version, DB_VERSION)
       assert.equal(db.prepare('SELECT COUNT(*) AS n FROM pragma_table_info(\'usage_hours\')').get()!.n, 16)
     })
   }
@@ -139,14 +146,14 @@ test('older hourly schemas are replaced before rollups are populated', (t) => {
 test('SQL migrations can change structure and process data, in ascending order, exactly once', (t) => {
   const { dir, file } = fixture(t)
   const versions = versionTree(dir, {
-    '9': "CREATE TABLE sample (value INTEGER); INSERT INTO sample VALUES (20);",
-    '10': 'ALTER TABLE sample ADD COLUMN doubled INTEGER; UPDATE sample SET doubled=value*2;',
+    [NEXT]: "CREATE TABLE sample (value INTEGER); INSERT INTO sample VALUES (20);",
+    [LAST]: 'ALTER TABLE sample ADD COLUMN doubled INTEGER; UPDATE sample SET doubled=value*2;',
   })
   migrate(file, versions)
   read(file, (db) => {
-    assert.equal(db.prepare('PRAGMA user_version').get()!.user_version, 10)
+    assert.equal(db.prepare('PRAGMA user_version').get()!.user_version, LAST)
     assert.deepEqual({ ...db.prepare('SELECT * FROM sample').get() }, { value: 20, doubled: 40 })
-    assert.deepEqual(db.prepare('SELECT version FROM schema_migrations ORDER BY version').all().map((r) => r.version), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
+    assert.deepEqual(db.prepare('SELECT version FROM schema_migrations ORDER BY version').all().map((r) => r.version), sequence(1, LAST))
   })
   assert.match(migrate(file, versions), /already current/)
   read(file, (db) => assert.equal(db.prepare('SELECT COUNT(*) AS n FROM sample').get()!.n, 1))
@@ -179,7 +186,7 @@ test('a failed later step rolls the entire pending chain back and retains a usab
   db.exec('PRAGMA user_version=3')
   db.close()
   const versions = versionTree(dir, {
-    '9': 'CREATE TABLE partial (value INTEGER); INSERT INTO missing_table VALUES (1);',
+    [NEXT]: 'CREATE TABLE partial (value INTEGER); INSERT INTO missing_table VALUES (1);',
   })
   const result = run(file, versions)
   assert.ifError(result.error)
@@ -191,14 +198,14 @@ test('a failed later step rolls the entire pending chain back and retains a usab
   })
   assert.equal(fs.readdirSync(path.join(dir, 'migration-backups')).length, 1)
   assert.equal(fs.existsSync(path.join(dir, 'daemon.lock')), false)
-  fs.writeFileSync(path.join(versions, 'v9', 'schema.sql'), 'CREATE TABLE partial (value INTEGER);')
+  fs.writeFileSync(path.join(versions, `v${NEXT}`, 'schema.sql'), 'CREATE TABLE partial (value INTEGER);')
   migrate(file, versions)
 })
 
 test('SQL steps cannot commit early, modify schema version, or attach another database', (t) => {
   for (const sql of ['COMMIT;', 'PRAGMA user_version=99;', "ATTACH ':memory:' AS other;"]) {
     const { dir, file } = fixture(t)
-    const versions = versionTree(dir, { '9': `CREATE TABLE partial (id); ${sql}` })
+    const versions = versionTree(dir, { [NEXT]: `CREATE TABLE partial (id); ${sql}` })
     const result = run(file, versions)
     assert.equal(result.status, 1, result.stdout + result.stderr)
     read(file, (db) => {
@@ -217,7 +224,7 @@ test('live data locks, invalid plans, future schemas, aliases and unversioned da
   assert.deepEqual(fs.readFileSync(file), before)
   fs.rmSync(path.join(dir, 'daemon.lock'))
   const versions = versionTree(dir)
-  fs.writeFileSync(path.join(versions, 'v9', 'plan'), 'missing.sql\n')
+  fs.writeFileSync(path.join(versions, `v${NEXT}`, 'plan'), 'missing.sql\n')
   assert.equal(run(file, versions).status, 1)
   assert.deepEqual(fs.readFileSync(file), before)
   fs.symlinkSync(file, path.join(dir, 'alias.db'))
@@ -239,13 +246,13 @@ test('interrupting a data migration rolls back and releases the native lock for 
   const { dir, file } = fixture(t)
   migrate(file)
   const versions = versionTree(dir, {
-    '9': 'CREATE TABLE slow(value); WITH RECURSIVE numbers(n) AS (VALUES(1) UNION ALL SELECT n+1 FROM numbers WHERE n<100000000) INSERT INTO slow SELECT n FROM numbers;',
+    [NEXT]: 'CREATE TABLE slow(value); WITH RECURSIVE numbers(n) AS (VALUES(1) UNION ALL SELECT n+1 FROM numbers WHERE n<100000000) INSERT INTO slow SELECT n FROM numbers;',
   })
   const child = spawn(extensionBinary, ['--db', file, '--migrations', versions, '--backup-dir', path.join(dir, 'backups')], { stdio: ['ignore', 'pipe', 'pipe'] })
   let output = ''
   child.stdout.on('data', (data) => {
     output += data
-    if (output.includes('schema 9')) child.kill('SIGTERM')
+    if (output.includes(`schema ${NEXT}`)) child.kill('SIGTERM')
   })
   child.stderr.resume()
   const timer = setTimeout(() => child.kill('SIGKILL'), 10000)
@@ -254,10 +261,10 @@ test('interrupting a data migration rolls back and releases the native lock for 
   assert.equal(code, 1)
   assert.equal(fs.existsSync(path.join(dir, 'daemon.lock')), false)
   read(file, (db) => {
-    assert.equal(db.prepare('PRAGMA user_version').get()!.user_version, 8)
+    assert.equal(db.prepare('PRAGMA user_version').get()!.user_version, DB_VERSION)
     assert.equal(db.prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE name='slow'").get()!.n, 0)
   })
-  fs.writeFileSync(path.join(versions, 'v9', 'schema.sql'), 'CREATE TABLE slow(value);')
+  fs.writeFileSync(path.join(versions, `v${NEXT}`, 'schema.sql'), 'CREATE TABLE slow(value);')
   migrate(file, versions)
 })
 
@@ -271,7 +278,7 @@ test('migration hour buckets match live writes across repeated hours and unusual
       const { dir, file } = fixture(t)
       const sql = 'CREATE TABLE hours(at INTEGER,hour INTEGER);' + times.map((at) =>
         `INSERT INTO hours VALUES (${at},local_hour(${at}));`).join('')
-      const versions = versionTree(dir, { '9': sql })
+      const versions = versionTree(dir, { [NEXT]: sql })
       migrate(file, versions)
       read(file, (db) => {
         for (const row of db.prepare('SELECT * FROM hours').all())
@@ -285,7 +292,7 @@ test('migration hour buckets match live writes across repeated hours and unusual
 })
 
 
-test('a v4 database runs v5 through v10 once without applying the v6-only correction', (t) => {
+test('a v4 database runs every pending version once without applying the v6-only correction', (t) => {
   const { dir, file } = fixture(t)
   const store = new Store(file)
   const session = new Session({ id: 's', harness: 'fake', agent: 'a', model: 'm', state: 'idle', cwd: dir }, store)
@@ -295,36 +302,36 @@ test('a v4 database runs v5 through v10 once without applying the v6-only correc
   store.db.exec('DELETE FROM events; DROP TABLE usage_hours; DROP TABLE usage_requests; PRAGMA user_version=4')
   store.close()
   const versions = versionTree(dir, {
-    '9': 'CREATE TABLE sequence(value); INSERT INTO sequence VALUES (9);',
-    '10': 'INSERT INTO sequence SELECT value+1 FROM sequence;',
+    [NEXT]: `CREATE TABLE sequence(value); INSERT INTO sequence VALUES (${NEXT});`,
+    [LAST]: 'INSERT INTO sequence SELECT value+1 FROM sequence;',
   })
   const output = migrate(file, versions)
-  assert.deepEqual([...output.matchAll(/Migrating database to schema (\d+)/g)].map((m) => Number(m[1])), [5, 6, 7, 8, 9, 10])
+  assert.deepEqual([...output.matchAll(/Migrating database to schema (\d+)/g)].map((m) => Number(m[1])), sequence(5, LAST))
   read(file, (db) => {
     assert.equal(db.prepare('SELECT input_tokens FROM turns').get()!.input_tokens, 1000)
     assert.equal(db.prepare('SELECT SUM(input_tokens) AS n FROM usage_hours').get()!.n, 1000)
-    assert.deepEqual(db.prepare('SELECT version FROM schema_migrations ORDER BY version').all().map((r) => r.version), [5, 6, 7, 8, 9, 10])
-    assert.deepEqual(db.prepare('SELECT value FROM sequence').all().map((r) => r.value), [9, 10])
+    assert.deepEqual(db.prepare('SELECT version FROM schema_migrations ORDER BY version').all().map((r) => r.version), sequence(5, LAST))
+    assert.deepEqual(db.prepare('SELECT value FROM sequence').all().map((r) => r.value), [NEXT, LAST])
   })
   assert.match(migrate(file, versions), /already current/)
 })
 
-test('a current v8 database skips older handlers and only records v9 and v10', (t) => {
+test('a current database skips older handlers and only records new versions', (t) => {
   const { dir, file } = fixture(t)
   new Store(file).close()
   const versions = versionTree(dir)
   const output = migrate(file, versions)
-  assert.deepEqual([...output.matchAll(/Migrating database to schema (\d+)/g)].map((m) => Number(m[1])), [9, 10])
-  read(file, (db) => assert.deepEqual(db.prepare('SELECT version FROM schema_migrations ORDER BY version').all().map((r) => r.version), [9, 10]))
+  assert.deepEqual([...output.matchAll(/Migrating database to schema (\d+)/g)].map((m) => Number(m[1])), [NEXT, LAST])
+  read(file, (db) => assert.deepEqual(db.prepare('SELECT version FROM schema_migrations ORDER BY version').all().map((r) => r.version), [NEXT, LAST]))
 })
 
 test('missing versions, noncanonical names, missing resources and uncompiled versions fail before opening a DB', (t) => {
   for (const mutate of [
     (versions: string) => fs.rmSync(path.join(versions, 'v5'), { recursive: true }),
-    (versions: string) => fs.renameSync(path.join(versions, 'v9'), path.join(versions, 'v09')),
-    (versions: string) => fs.rmSync(path.join(versions, 'v9', 'schema.sql')),
-    (versions: string) => fs.writeFileSync(path.join(versions, 'v9', 'plan'), '../escape.sql\n'),
-    (versions: string) => fs.writeFileSync(path.join(versions, 'v9', 'plan'), 'schema.sql' + 'x'.repeat(4096)),
+    (versions: string) => fs.renameSync(path.join(versions, `v${NEXT}`), path.join(versions, `v0${NEXT}`)),
+    (versions: string) => fs.rmSync(path.join(versions, `v${NEXT}`, 'schema.sql')),
+    (versions: string) => fs.writeFileSync(path.join(versions, `v${NEXT}`, 'plan'), '../escape.sql\n'),
+    (versions: string) => fs.writeFileSync(path.join(versions, `v${NEXT}`, 'plan'), 'schema.sql' + 'x'.repeat(4096)),
   ]) {
     const { dir, file } = fixture(t)
     const versions = versionTree(dir)
@@ -346,7 +353,7 @@ test('missing versions, noncanonical names, missing resources and uncompiled ver
 test('the build refuses a missing intermediate version and mismatched handler name', (t) => {
   for (const mutate of [
     (versions: string) => fs.rmSync(path.join(versions, 'v5'), { recursive: true }),
-    (versions: string) => fs.writeFileSync(path.join(versions, 'v9', 'main.cob'), 'PROGRAM-ID. WRONG.'),
+    (versions: string) => fs.writeFileSync(path.join(versions, `v${NEXT}`, 'main.cob'), 'PROGRAM-ID. WRONG.'),
   ]) {
     const { dir } = fixture(t)
     const versions = versionTree(dir)
@@ -355,4 +362,27 @@ test('the build refuses a missing intermediate version and mismatched handler na
       path.join(migrationRoot, 'src'), versions, path.join(dir, 'generated')], { encoding: 'utf8' })
     assert.equal(result.status, 1, result.stdout + result.stderr)
   }
+})
+
+test('the build refuses a package dbVersion that differs from the migration tree', (t) => {
+  const { dir } = fixture(t)
+  const manifest = path.join(dir, 'package.json')
+  for (const dbVersion of [DB_VERSION - 1, DB_VERSION + 1]) {
+    fs.writeFileSync(manifest, JSON.stringify({ dbVersion }))
+    const result = spawnSync(process.execPath, [path.resolve('release/generate-migrations.mjs'),
+      path.join(migrationRoot, 'src'), coreVersions, path.join(dir, 'generated'), manifest], { encoding: 'utf8' })
+    assert.equal(result.status, 1, result.stdout + result.stderr)
+    assert.match(result.stderr, /dbVersion=.*requires migrations/)
+    assert.equal(fs.existsSync(path.join(dir, 'generated')), false)
+  }
+})
+
+test('a stale migration binary is refused before opening the database', (t) => {
+  const { dir, file } = fixture(t)
+  const result = spawnSync(migrationBinary, ['--db', file, '--migrations', coreVersions,
+    '--backup-dir', path.join(dir, 'backups'), '--target-version', String(DB_VERSION + 1)], { encoding: 'utf8' })
+  assert.equal(result.status, 1, result.stdout + result.stderr)
+  assert.match(result.stderr, /binary does not match package.json dbVersion/)
+  assert.equal(fs.existsSync(file), false)
+  assert.equal(fs.existsSync(path.join(dir, 'daemon.lock')), false)
 })

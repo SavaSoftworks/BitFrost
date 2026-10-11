@@ -20,7 +20,13 @@ historical rollups.
 ## Version layout
 
 Schema versions are SQLite `PRAGMA user_version` values, separate from application
-release numbers. `src/` contains only shared engine code. Each migration owns its
+release numbers. The root `package.json` declares the current schema in `dbVersion`.
+The daemon reads it, and the migration build embeds that same target in COBOL,
+checking that exactly v1 through vN exist. Release packaging bundles the package
+metadata into the plugin for standalone Claude Code copies.
+Install-time migration also checks that the binary's compiled target matches
+`dbVersion` before opening the database.
+`src/` contains only shared engine code. Each migration owns its
 COBOL entry point and resources beside it:
 
 ```text
@@ -102,8 +108,8 @@ statements, as in `v8/main.cob`. Handlers never manage transactions, set schema
 versions, or exit the process. SQL files cannot commit, issue PRAGMAs, or attach
 another database; the engine owns those operations.
 
-Rebuild the executable for every release platform. Set the daemon store's
-`VERSION` to the new target and provide its complete `schema.sql` and `indexes.sql`
+Rebuild the executable for every release platform. Set the root `package.json`
+`dbVersion` to the new target and provide its complete `schema.sql` and `indexes.sql`
 snapshot in that version folder for empty development/in-memory databases. Existing
 installed databases always use the COBOL migration chain during install/update.
 
@@ -136,7 +142,7 @@ node --test --disable-warning=ExperimentalWarning plugins/bitfrost/daemon/test/m
 
 `release/build-migrations.sh --static` uses pinned, checksum-verified GnuCOBOL
 3.2, GMP 6.3.0, and SQLite 3.50.4 sources. It needs Node.js, GnuCOBOL 3.2, a C compiler,
-make, curl, tar, and unzip. Linux releases build with musl; macOS builds both
+make, m4, curl, tar, and unzip. Linux releases build with musl; macOS builds both
 architectures with a 12.3 deployment target. Shipped binaries contain their
 COBOL runtime, GMP, and SQLite, so users install no extra libraries. Build scripts
 share the repository's CPU budget and affinity settings.
@@ -149,10 +155,12 @@ plugins/bitfrost/migrations/build/bitfrost-migrate \
   --db /path/to/bitfrost.db --migrations /path/to/versions --backup-dir /path/to/backups
 ```
 
-To build a separate version tree without replacing the normal development binary:
+To build a separate version tree without replacing the normal development binary,
+provide a package file with its target `dbVersion`:
 
 ```sh
-release/build-migrations.sh --versions /path/to/versions --build-dir /tmp/migration-build
+release/build-migrations.sh --versions /path/to/versions \
+  --package-json /path/to/package.json --build-dir /tmp/migration-build
 ```
 
 The database's parent directory must exist. The native runner refuses an existing

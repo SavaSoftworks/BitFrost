@@ -150,5 +150,8 @@ if(Python3_Interpreter_FOUND AND NODE_EXECUTABLE)
         ${CMAKE_CURRENT_SOURCE_DIR}/tests/pty_smoke.py $<TARGET_FILE:bitfrost-tui>)
     add_test(NAME pty-static COMMAND ${Python3_EXECUTABLE}
         ${CMAKE_CURRENT_SOURCE_DIR}/tests/pty_smoke.py $<TARGET_FILE:bitfrost-tui> --no-anim)
-    set_tests_properties(pty-smoke pty-static PROPERTIES TIMEOUT 90)
+    # Each suite exercises several complete PTY sessions, including updates
+    # and configuration. Hosted macOS runs can exceed the old 90-second cap;
+    # individual process/input checks keep their shorter internal deadlines.
+    set_tests_properties(pty-smoke pty-static PROPERTIES TIMEOUT 180)
 endif()

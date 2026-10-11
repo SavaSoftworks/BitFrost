@@ -23,9 +23,10 @@ jobs:
         if: runner.os == 'Linux'
         run: >
           docker run --rm --volume "$PWD:/src" --workdir /src --env "OWNER=$(id -u):$(id -g)" alpine:3.24 sh -c
-          'apk add --no-cache build-base gnucobol sqlite-dev curl unzip file nodejs-current &&
+          'apk add --no-cache build-base gnucobol sqlite-dev curl unzip file m4 nodejs-current &&
           ./release/build-migrations.sh --static dist/bitfrost-migrate &&
-          file dist/bitfrost-migrate | grep -q "statically linked" &&
+          file dist/bitfrost-migrate &&
+          file dist/bitfrost-migrate | grep -Eq "statically linked|static-pie linked" &&
           node --test --disable-warning=ExperimentalWarning plugins/bitfrost/daemon/test/migration.spec.ts plugins/bitfrost/daemon/test/store.spec.ts;
           status=$?;
           chown -R "$OWNER" dist plugins/bitfrost/migrations/build 2>/dev/null;

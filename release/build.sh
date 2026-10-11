@@ -42,11 +42,14 @@ out=dist/$name
 
 rm -rf "$out" "dist/$name.tar.gz" "dist/$name.tar.gz.sha256" dist/install.sh
 mkdir -p "$out/.claude-plugin" "$out/plugins"
-cp LICENSE README.md "$out/"
+cp LICENSE README.md package.json "$out/"
 tar -C plugins --exclude=bitfrost/migrations/build --exclude=bitfrost/migrations/bin \
   -cf "$out/plugin.tar" bitfrost
 tar -xf "$out/plugin.tar" -C "$out/plugins"
 rm "$out/plugin.tar"
+# Claude Code caches only the plugin folder, so carry the canonical metadata
+# into that folder as a build artifact as well.
+cp package.json "$out/plugins/bitfrost/package.json"
 mkdir -p "$out/release"
 cp release/build-migrations.sh release/build-cpu.sh \
   release/generate-migrations.mjs "$out/release/"

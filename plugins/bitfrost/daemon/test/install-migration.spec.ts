@@ -12,9 +12,11 @@ import { fileURLToPath } from 'node:url'
 import { migrationBinary, migrationRoot } from './migrate.ts'
 import { Store } from '../store.ts'
 import { Session } from '../session.ts'
+import { DB_VERSION } from '../db-version.ts'
 
 const installer = fileURLToPath(new URL('../../../../release/install.sh', import.meta.url))
 const plugin = fileURLToPath(new URL('../../', import.meta.url))
+const rootPackage = fileURLToPath(new URL('../../../../package.json', import.meta.url))
 const version = JSON.parse(fs.readFileSync(path.join(plugin, '.claude-plugin/plugin.json'), 'utf8')).version
 
 function fixture(t: any, corruption?: 'plan' | 'version', releaseVersion = version) {
@@ -28,6 +30,8 @@ function fixture(t: any, corruption?: 'plan' | 'version', releaseVersion = versi
   fs.cpSync(plugin, dest, { recursive: true, filter: (file) =>
     ![path.join(migrationRoot, 'build'), path.join(plugin, 'daemon', 'test'),
       path.join(plugin, '.claude-plugin', 'types')].some((skip) => file === skip) })
+  fs.copyFileSync(rootPackage, path.join(stage, 'package.json'))
+  fs.copyFileSync(rootPackage, path.join(dest, 'package.json'))
   const manifest = path.join(dest, '.claude-plugin', 'plugin.json')
   fs.writeFileSync(manifest, JSON.stringify({ ...JSON.parse(fs.readFileSync(manifest, 'utf8')), version: releaseVersion }))
   // Avoid network requests for the optional TUI in these offline installer tests.
@@ -160,7 +164,7 @@ test('install.sh migrates a retained database and builds rollups before activati
   assert.equal(fs.existsSync(path.join(run.env.BITFROST_RUNTIME_DIR, 'bitfrostd.lock')), false, 'installation does not start the daemon')
   const db = new DatabaseSync(run.file, { readOnly: true })
   try {
-    assert.equal(db.prepare('PRAGMA user_version').get()!.user_version, 8)
+    assert.equal(db.prepare('PRAGMA user_version').get()!.user_version, DB_VERSION)
     assert.equal(db.prepare('SELECT SUM(input_tokens+output_tokens) AS n FROM usage_hours').get()!.n, 150)
     assert.equal(db.prepare('SELECT final_text FROM turns').get()!.final_text, 'kept')
   } finally { db.close() }

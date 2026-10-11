@@ -42,8 +42,6 @@ In auto mode, Claude answers subagent questions and a safety review decides perm
 
 ## Install
 
----
-
 
 ### Requirements
 
@@ -105,7 +103,6 @@ This removes the Claude plugin, daemon, ZCode plugin (if installed) and BitFrost
 
 ## Configuration
 
----
 
 Run `bitfrost` or `bitfrost config` in a terminal to open the interface:
 
@@ -128,7 +125,6 @@ If the interface can't open on your platform, BitFrost prints help and tells you
 
 ## Supported Harnesses
 
----
 
 Use any mix of these.
 
@@ -147,7 +143,6 @@ opencode, Oh My Pi and Crush also need a `models` list naming the models you wan
 
 ## How to Use
 
----
 
 Ask Claude for a model by name:
 
@@ -171,7 +166,6 @@ If something isn't working, see [Troubleshooting](GUIDE.md#troubleshooting).
 
 ## How to Use Effectively
 
----
 
 Tell Claude which kinds of tasks each model should take on. For example:
 
@@ -183,7 +177,6 @@ Once Claude understands the assignment, ask it to save that as a rule in your CL
 
 ## Known Limitations
 
----
 
 - GLM needs a Z.ai individual coding plan. ZCode only offers Teams, Start plans, free usage, bigmodel and its other providers inside its desktop app, not to outside tools, so BitFrost can't use them.
 - Windows is not a supported platform. It may work via WSL, but it also may not.
@@ -209,7 +202,6 @@ Once Claude understands the assignment, ask it to save that as a rule in your CL
 
 ## Accounts, terms and affiliation
 
----
 
 BitFrost runs supported coding apps on your machine. Those apps handle authentication and model requests using your accounts. You need valid access to each provider you use; usage counts toward that provider's limits and charges.
 

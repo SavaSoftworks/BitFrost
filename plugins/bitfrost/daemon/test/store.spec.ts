@@ -10,6 +10,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { Store, hourOf } from '../store.ts'
+import { DB_VERSION } from '../db-version.ts'
 import { migrate } from './migrate.ts'
 import { summarize } from '../usage.ts'
 import { Session } from '../session.ts'
@@ -48,7 +49,7 @@ test('push writes sessions, native refs, turns, events, messages and usage throu
   finish(s, 't')
   const reader = new Store(file)
   try {
-    assert.equal(reader.db.prepare('PRAGMA user_version').get()!.user_version, 8)
+    assert.equal(reader.db.prepare('PRAGMA user_version').get()!.user_version, DB_VERSION)
     assert.equal(reader.db.prepare('PRAGMA journal_mode').get()!.journal_mode, 'wal')
     assert.equal(reader.db.prepare('PRAGMA busy_timeout').get()!.timeout, 5000)
     assert.equal(reader.db.prepare('PRAGMA foreign_keys').get()!.foreign_keys, 1)
@@ -335,7 +336,7 @@ test('version one schema upgrades and backfills approvals without native item id
     restored.activeTurnId = 't'
     restored.push({ type: 'approval_resolved', approvalId: 'approval', decision: 'deny' })
     assert.equal(upgraded.message('s', 'native')!.status, 'declined')
-    assert.equal(upgraded.db.prepare('PRAGMA user_version').get()!.user_version, 8)
+    assert.equal(upgraded.db.prepare('PRAGMA user_version').get()!.user_version, DB_VERSION)
   } finally { upgraded.close() }
 })
 
@@ -347,7 +348,7 @@ test('version two adds per-session client input ids and keeps legacy receipts', 
   const upgraded = new Store(file)
   try {
     assert.equal(upgraded.degraded, false)
-    assert.equal(upgraded.db.prepare('PRAGMA user_version').get()!.user_version, 8)
+    assert.equal(upgraded.db.prepare('PRAGMA user_version').get()!.user_version, DB_VERSION)
     assert.equal(upgraded.pending('s')[0].id, legacy.id)
     assert.equal(upgraded.pending('s')[0].client_input_id, null)
     const restored = Session.load('s', upgraded)!

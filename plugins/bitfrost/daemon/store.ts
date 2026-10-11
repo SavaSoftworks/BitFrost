@@ -7,6 +7,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
+import { DB_VERSION } from './db-version.ts'
 import type { AgentEvent, Delivery } from './events.ts'
 import type { Session } from './session.ts'
 
@@ -39,7 +40,7 @@ const USAGE = ['sessions', 'closed_sessions', 'session_ms', 'turns', 'failed_tur
 // Persistent upgrades run in the COBOL engine during installation.
 export class MigrationRequiredError extends Error {
   constructor(version: number) {
-    super(`BitFrost database schema ${version} needs migration to ${VERSION}; run bitfrost migrate or reinstall this release`)
+    super(`BitFrost database schema ${version} needs migration to ${DB_VERSION}; run bitfrost migrate or reinstall this release`)
   }
 }
 type Usage = Extract<AgentEvent, { type: 'usage' }>
@@ -59,7 +60,6 @@ const ROW = 'id,harness,agent,model,effort,title,state,created_at,closed_at,clos
 const IDS = 'SELECT value FROM json_each(?)'
 const statusOf = (e: Row) => e.ok === false || ['failed', 'error'].includes(e.status) ? 'error' : e.status === 'declined' ? 'declined' : 'ok'
 
-const VERSION = 8
 const EVENT_BYTES = 256 * 1024
 const bodyJSON = (e: AgentEvent) => {
   const json = JSON.stringify(e)
@@ -109,14 +109,14 @@ export class Store {
       this.database = open(file)
       this.db.exec('PRAGMA busy_timeout=5000')
       const version = (this.database.prepare('PRAGMA user_version').get() as Row).user_version
-      if (version > VERSION) {
+      if (version > DB_VERSION) {
         this.database.close()
         this.database = open(':memory:')
         this.degraded = true
         this.error = `BitFrost database version ${version} is newer than this daemon; persistence disabled`
         try { this.log(this.error) } catch {}
       }
-      if (version > 0 && version < VERSION) throw new MigrationRequiredError(version)
+      if (version > 0 && version < DB_VERSION) throw new MigrationRequiredError(version)
       if (exclusive && !this.degraded) this.db.exec('PRAGMA locking_mode=EXCLUSIVE')
       this.initialize()
       this.opened = true
@@ -154,10 +154,10 @@ export class Store {
         // Empty development/test and memory stores need only the current schema.
         // Existing databases never run migrations or historical data work here.
         if (this.db.prepare("SELECT 1 FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' LIMIT 1").get()) throw new MigrationRequiredError(from)
-        this.db.exec(fs.readFileSync(new URL(`../migrations/versions/v${VERSION}/schema.sql`, import.meta.url), 'utf8'))
-        this.db.exec(fs.readFileSync(new URL(`../migrations/versions/v${VERSION}/indexes.sql`, import.meta.url), 'utf8'))
-        this.db.exec(`PRAGMA user_version=${VERSION}`)
-      } else if (from !== VERSION) throw new MigrationRequiredError(from)
+        this.db.exec(fs.readFileSync(new URL(`../migrations/versions/v${DB_VERSION}/schema.sql`, import.meta.url), 'utf8'))
+        this.db.exec(fs.readFileSync(new URL(`../migrations/versions/v${DB_VERSION}/indexes.sql`, import.meta.url), 'utf8'))
+        this.db.exec(`PRAGMA user_version=${DB_VERSION}`)
+      } else if (from !== DB_VERSION) throw new MigrationRequiredError(from)
       this.db.prepare('SELECT u.updated_at,s.request_input,r.request_id FROM usage_hours u,sessions s,usage_requests r LIMIT 0').all()
       this.db.exec('COMMIT')
     } catch (error) { this.db.exec('ROLLBACK'); throw error }

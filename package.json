@@ -3,6 +3,7 @@
   "private": true,
   "type": "module",
   "license": "GPL-3.0-only",
+  "dbVersion": 8,
   "scripts": {
     "check": "release/check.sh",
     "test": "npm run test:daemon && npm run test:plugin",

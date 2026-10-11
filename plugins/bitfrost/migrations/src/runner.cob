@@ -84,7 +84,8 @@
                END-IF
                IF ARG-TEXT = '--help'
                    DISPLAY 'bitfrost-migrate --db FILE '
-                       '--migrations DIR --backup-dir DIR'
+                       '--migrations DIR --backup-dir DIR '
+                       '[--target-version N]'
                    MOVE MIGRATION-OK TO RETURN-CODE
                    STOP RUN
                END-IF
@@ -103,6 +104,17 @@
                        MOVE ARG-TEXT TO MIGRATION-DIR
                    WHEN '--backup-dir'
                        MOVE ARG-TEXT TO BACKUP-DIR
+                   WHEN '--target-version'
+                       IF FUNCTION TEST-NUMVAL(ARG-TEXT)
+                               NOT = ZERO OR
+                           FUNCTION NUMVAL(ARG-TEXT)
+                               NOT = COMPILED-VERSION-COUNT
+                           MOVE 'Migration binary does not match ' &
+                               'package.json dbVersion; rebuild ' &
+                               'or reinstall this release'
+                               TO ERROR-MESSAGE
+                           PERFORM FATAL
+                       END-IF
                    WHEN '--lock-owner'
                        IF FUNCTION TEST-NUMVAL(ARG-TEXT)
                                NOT = ZERO OR

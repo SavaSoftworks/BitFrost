@@ -8,11 +8,13 @@ static=
 out=
 versions=
 build_dir=
+manifest=$PWD/package.json
 while [ $# -gt 0 ]; do
   case $1 in
     --static) static=1 ;;
     --versions) shift; versions=${1:?--versions requires a directory} ;;
     --build-dir) shift; build_dir=${1:?--build-dir requires a directory} ;;
+    --package-json) shift; manifest=${1:?--package-json requires a file} ;;
     -*) echo "build-migrations.sh: unknown option $1" >&2; exit 1 ;;
     *) [ -z "$out" ] || { echo "Only one output path is allowed" >&2; exit 1; }; out=$1 ;;
   esac
@@ -28,7 +30,7 @@ mkdir -p "$build"
 build=$(cd "$build" && pwd)
 versions=$(cd "$versions" && pwd)
 mkdir -p "$build/generated"
-node release/generate-migrations.mjs "$src/src" "$versions" "$build/generated"
+node release/generate-migrations.mjs "$src/src" "$versions" "$build/generated" "$manifest"
 if [ -z "$static" ]; then
   COB_CFLAGS='-std=gnu11 -O2 -fno-lto' COB_LDFLAGS=-fno-lto \
   cobc -x -free -ftext-column=255 -Wall -Wno-possible-truncate -O2 \
@@ -36,6 +38,7 @@ if [ -z "$static" ]; then
     -o "$build/bitfrost-migrate" "$build/generated/combined.cob" \
     "$src/src/sqlite.c" -lsqlite3
 else
+  command -v m4 >/dev/null 2>&1 || { echo 'build-migrations.sh: m4 is required to build GMP' >&2; exit 1; }
   mkdir -p "$build/vendor" "$build/generated"
   download() {
     name=$1 url=$2 hash=$3
@@ -84,7 +87,8 @@ else
       (cd "$build/$arch/cobol" &&
         "$build/vendor/gnucobol-3.2/configure" --prefix="$prefix" --disable-shared --enable-static --disable-nls \
           --without-db --without-curses --without-xml2 --with-json=no --with-dl $host \
-          CC="${CC:-cc}" CFLAGS="-std=gnu11 -O2 $arch_flags" CPPFLAGS="-I$prefix/include" LDFLAGS="-L$prefix/lib $arch_flags" &&
+          CC="${CC:-cc}" CFLAGS="-std=gnu11 -O2 $arch_flags" CPPFLAGS="-I$prefix/include" LDFLAGS="-L$prefix/lib $arch_flags" \
+          GMP_CFLAGS="-I$prefix/include" GMP_LIBS="-L$prefix/lib -lgmp" &&
         make -C libcob -j "$jobs" && touch runtime-built)
     fi
     # No LTO, so the single linker process cannot start extra compiler workers.

@@ -2,9 +2,11 @@
 // Build-time registration only. Migration policy and processing stay in COBOL.
 import fs from 'node:fs'
 import path from 'node:path'
+import { readDbVersion } from '../plugins/bitfrost/daemon/db-version.ts'
 
-const [source, versions, output] = process.argv.slice(2)
+const [source, versions, output, manifest = new URL('../package.json', import.meta.url)] = process.argv.slice(2)
 if (!source || !versions || !output) throw new Error('Expected source, versions and output directories')
+const dbVersion = readDbVersion(manifest)
 const entries = fs.readdirSync(versions, { withFileTypes: true })
 for (const entry of entries) {
   if (!entry.isDirectory() || !/^v[1-9][0-9]*$/.test(entry.name))
@@ -23,9 +25,15 @@ const handlers = ordered.map((entry, index) => {
   fs.accessSync(path.join(dir, 'plan'))
   return { version, code, program }
 })
+if (handlers.length !== dbVersion) {
+  throw new Error(`package.json dbVersion=${dbVersion} requires migrations v1 through v${dbVersion}; found ${handlers.length} versions`)
+}
+for (const name of ['schema.sql', 'indexes.sql']) {
+  fs.accessSync(path.join(versions, `v${dbVersion}`, name))
+}
 fs.mkdirSync(output, { recursive: true })
 fs.writeFileSync(path.join(output, 'registry.cpy'),
-  `       78  COMPILED-VERSION-COUNT VALUE ${handlers.length}.\n`)
+  `       78  COMPILED-VERSION-COUNT VALUE ${dbVersion}.\n`)
 fs.writeFileSync(path.join(output, 'dispatch.cpy'),
   '               EVALUATE STEP-INDEX\n' + handlers.map(({ version, program }) =>
     `                   WHEN ${version}\n` +

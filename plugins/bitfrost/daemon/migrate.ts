@@ -6,6 +6,7 @@ import path from 'node:path'
 import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { DATA_DIR, DATA_LOCK, takeLock } from './config.ts'
+import { DB_VERSION } from './db-version.ts'
 
 export async function migrateDatabase(stop: () => Promise<string | null>, installer = false) {
   const root = fileURLToPath(new URL('../migrations/', import.meta.url))
@@ -33,6 +34,7 @@ export async function migrateDatabase(stop: () => Promise<string | null>, instal
     await new Promise<void>((resolve, reject) => {
       const child = spawn(binary, ['--db', path.join(DATA_DIR, 'bitfrost.db'),
         '--migrations', path.join(root, 'versions'), '--backup-dir', backupDir,
+        '--target-version', String(DB_VERSION),
         '--lock-owner', String(owner)], { stdio: 'inherit' })
       const terminate = () => child.kill('SIGTERM')
       process.on('SIGINT', terminate)

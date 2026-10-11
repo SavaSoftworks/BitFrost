@@ -3,6 +3,10 @@
  * SQLite and POSIX bindings for the COBOL migration engine. Migration policy
  * and data transformations belong in runner.cob and the versioned steps. */
 #define _POSIX_C_SOURCE 200809L
+#ifdef __APPLE__
+/* O_NOFOLLOW is part of Darwin's extended file API. */
+#define _DARWIN_C_SOURCE
+#endif
 #include <sqlite3.h>
 #include <dirent.h>
 #include <errno.h>
