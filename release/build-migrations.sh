@@ -32,8 +32,10 @@ versions=$(cd "$versions" && pwd)
 mkdir -p "$build/generated"
 node release/generate-migrations.mjs "$src/src" "$versions" "$build/generated" "$manifest"
 if [ -z "$static" ]; then
-  COB_CFLAGS='-std=gnu11 -O2 -fno-lto' COB_LDFLAGS=-fno-lto \
+  # Preserve configured dependency paths (including Homebrew's keg-only GMP).
+  # Append our flags instead of replacing the compiler and linker defaults.
   cobc -x -free -ftext-column=255 -Wall -Wno-possible-truncate -O2 \
+    -A '-std=gnu11 -fno-lto' -Q '-fno-lto' \
     -I"$src/src" -I"$build/generated" \
     -o "$build/bitfrost-migrate" "$build/generated/combined.cob" \
     "$src/src/sqlite.c" -lsqlite3

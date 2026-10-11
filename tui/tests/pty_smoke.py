@@ -278,6 +278,13 @@ def run(binary, broker, measure=False, snapshots=None, no_anim=False):
             drain(delay)
             assert process.poll() is None, "UI exited while navigating"
 
+        def wait_for(predicate, message, timeout=3):
+            deadline = time.monotonic() + timeout
+            while not predicate() and time.monotonic() < deadline:
+                drain(min(0.02, max(0, deadline - time.monotonic())))
+                assert process.poll() is None, "UI exited while waiting for rendering"
+            assert predicate(), message
+
         def stats():
             if not Path("/proc").exists():
                 return None
@@ -450,6 +457,7 @@ def run(binary, broker, measure=False, snapshots=None, no_anim=False):
                 label in screen.text() for label in ("/tmp/bitfrost-fake.sock", "workstation", "Expires in")
             ), "Helper paths or leases missing"
             assert "".join(c[0] for c in screen.cells[5][28:34]) == "Helper", "Helper group heading missing"
+            wait_for(lambda: screen.cells[5][28][1] == (182, 197, 210), "Helper heading did not finish fading in")
             assert screen.cells[5][28][1] == (182, 197, 210), "Helper heading is not white"
             assert screen.cells[6][28][1] == (78, 173, 245) and screen.cells[6][37][1] == (62, 78, 94), (
                 "Helper label/value colors are not blue/dim"
@@ -479,7 +487,16 @@ def run(binary, broker, measure=False, snapshots=None, no_anim=False):
             assert not "".join(
                 c[0] for c in screen.cells[15][27:115]
             ).strip(), "Enabled section has no blank separator"
-            for y, category in ((6, "codex"), (13, "neuralwatt"), (17, "codex")):
+            categories = ((6, "codex"), (13, "neuralwatt"), (17, "codex"))
+            wait_for(
+                lambda: all(
+                    "".join(c[0] for c in screen.cells[y][28:28 + len(category)]) == category
+                    and all(c[1] == (182, 197, 210) for c in screen.cells[y][28:28 + len(category)])
+                    for y, category in categories
+                ),
+                "Model category headings did not finish fading in",
+            )
+            for y, category in categories:
                 assert "".join(c[0] for c in screen.cells[y][28:28 + len(category)]) == category, (
                     "Category heading moved unexpectedly"
                 )
@@ -772,6 +789,7 @@ def run(binary, broker, measure=False, snapshots=None, no_anim=False):
             key(b"\x1b[6~")
             assert "Harnesses" in screen.selected(right=25), "Settings sidebar Page Down failed"
             assert "".join(c[0] for c in screen.cells[5][28:33]) == "Codex", "Harness heading moved unexpectedly"
+            wait_for(lambda: screen.cells[5][28][1] == (182, 197, 210), "Harness heading did not finish fading in")
             assert screen.cells[5][28][1] == (182, 197, 210) and screen.cells[6][28][1] == (78, 173, 245), (
                 "Harness headings and inactive labels have the wrong colors"
             )
