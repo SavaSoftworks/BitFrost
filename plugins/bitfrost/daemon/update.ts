@@ -10,21 +10,13 @@ import os from 'node:os'
 import path from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { VERSION } from './config.ts'
+import { newer } from './version.ts'
+export { newer } from './version.ts'
 import { done, fail, step, task } from './ui.ts'
 
 const REPO = process.env.BITFROST_REPO || 'SavaSoftworks/BitFrost'
 // A stalled network must not hang an update; GitHub answers well within this.
 export const FETCH_MS = 20_000
-
-export function newer(a: string, b: string): boolean {
-  const x = a.split('.').map(Number)
-  const y = b.split('.').map(Number)
-  for (let i = 0; i < Math.max(x.length, y.length); i++) {
-    const d = (x[i] ?? 0) - (y[i] ?? 0)
-    if (d) return d > 0
-  }
-  return false
-}
 
 // GitHub redirects /releases/latest to the newest tag. No API call, so no rate limit.
 export async function latestVersion(base: string): Promise<string> {

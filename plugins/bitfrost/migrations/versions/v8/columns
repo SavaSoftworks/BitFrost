@@ -1,0 +1,13 @@
+# table|column|definition (only added when absent)
+turns|pgid|INTEGER
+turns|process_identity|TEXT
+messages|approval_id|TEXT
+inbox|client_input_id|TEXT
+sessions|tokens|INTEGER DEFAULT 0
+sessions|cached_tokens|INTEGER DEFAULT 0
+sessions|turns|INTEGER DEFAULT 0
+sessions|tool_calls|INTEGER DEFAULT 0
+sessions|active_ms|INTEGER DEFAULT 0
+sessions|changed_at|INTEGER DEFAULT 0
+sessions|request_input|INTEGER DEFAULT 0
+sessions|request_output|INTEGER DEFAULT 0

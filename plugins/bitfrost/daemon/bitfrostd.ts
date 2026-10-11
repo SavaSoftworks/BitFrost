@@ -55,6 +55,7 @@ import { PROVIDERS } from './providers/index.ts'
 import { selftest, selftestAll } from './selftest.ts'
 import { update } from './update.ts'
 import { uninstall } from './uninstall.ts'
+import { migrateDatabase } from './migrate.ts'
 import { FEATURES, findFeature } from './features.ts'
 import { setupFeatures } from './settings.ts'
 
@@ -822,6 +823,7 @@ usage: bitfrost <command>
 
   status                    what the helper is doing: apps, models, subagents
   restart                   restart the helper, once no subagent is running
+  migrate                   stop an idle helper and migrate the database now
   update                    install the latest release, if it's newer
   uninstall [--yes]         remove BitFrost from Claude Code, ZCode and this machine
     [--keep-config]         with --yes, keep your config
@@ -856,6 +858,10 @@ else if (mode === 'serve') serve()
 else if (mode === 'socket') console.log(SOCKET)
 else if (mode === 'status') await printStatus()
 else if (mode === 'restart') await restart()
+else if (mode === 'migrate') {
+  try { await migrateDatabase(stop, process.argv.includes('--install-lock')) }
+  catch (error) { console.error((error as Error).message); process.exitCode = 1 }
+}
 else if (mode === 'update') process.exit(await update())
 else if (mode === 'uninstall') {
   const flags = process.argv.slice(3)

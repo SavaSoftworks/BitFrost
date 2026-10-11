@@ -56,6 +56,27 @@ namespace bf {
         if (saving || helper_missing) {
             return false;
         }
+        if (configuration.open) {
+            if (configuration.busy) {
+                return false;
+            }
+            if (wheel) {
+                configuration_input({event.delta < 0 ? Key::ScrollUp : Key::ScrollDown, {}});
+            } else if (target->kind == HitKind::ConfigurationOption) {
+                configuration.option = target->index;
+                configuration.option_view.follow();
+            } else if (target->kind == HitKind::ConfigurationPrevious) {
+                configuration_move(-1);
+            } else if (target->kind == HitKind::ConfigurationNext) {
+                configuration_move(1);
+            } else if (target->kind == HitKind::ConfigurationContinue) {
+                configuration_input({Key::Enter, {}});
+            } else if (target->kind == HitKind::ConfigurationStep) {
+                configuration_move(target->index - configuration.step);
+            }
+            last_click.reset();
+            return true;
+        }
         if (wheel) {
             last_click.reset();
             int delta = 3 * event.delta;
@@ -228,6 +249,11 @@ namespace bf {
             break;
         case HitKind::Back:
         case HitKind::Controls:
+        case HitKind::ConfigurationOption:
+        case HitKind::ConfigurationStep:
+        case HitKind::ConfigurationPrevious:
+        case HitKind::ConfigurationNext:
+        case HitKind::ConfigurationContinue:
             break;
         }
         return true;

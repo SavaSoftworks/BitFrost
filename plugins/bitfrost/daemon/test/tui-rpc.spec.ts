@@ -13,6 +13,7 @@ import { PassThrough } from 'node:stream'
 import { edit, revision, setModel } from '../configedit.ts'
 import { whyNot } from '../registry.ts'
 import { serveRpc } from '../tui-rpc.ts'
+import { availableFeatures } from '../features.ts'
 
 const model = (harness: string, provider: string, id: string) => ({ harness, provider, model: id, displayName: id, description: '', efforts: [], defaultEffort: null, isDefault: false })
 
@@ -110,6 +111,59 @@ function broker(t: any, replies: Record<string, (path: string) => any> = {}) {
   return { rpc, file, calls, notes, close: async () => { input.end(); await done } }
 }
 
+test('broker: wizard drafts are read-only and recap saves all new answers together', async (t) => {
+  const { rpc, file } = broker(t)
+  fs.writeFileSync(file, JSON.stringify({ handback: { enabled: false }, settingsUpToDate: false, providers: { codex: { bin: '/custom' } } }))
+  const original = fs.readFileSync(file, 'utf8')
+  assert.equal((await rpc('hello', { protocol: 1 })).result.settingsUpToDate, false)
+  let plan = (await rpc('settings.pending')).result
+  assert.equal(plan.steps.length, 4)
+  assert.ok(plan.steps.every((s: any) => s.help.includes('Test setting')))
+  plan.answers.previewAppearance.choice = 'Compact'
+  plan = (await rpc('settings.pending', { revision: plan.revision, answers: plan.answers })).result
+  assert.equal(plan.steps[0].value, 'Compact')
+  assert.equal(fs.readFileSync(file, 'utf8'), original, 'moving between questions cannot save answers')
+  const saved = await rpc('settings.configure', { revision: plan.revision, answers: plan.answers })
+  assert.equal(saved.result.ok, true)
+  const raw = JSON.parse(fs.readFileSync(file, 'utf8'))
+  assert.equal(raw.settingsUpToDate, true)
+  assert.equal(raw.previewAppearance.choice, 'Compact')
+  assert.deepEqual(raw.providers, { codex: { bin: '/custom' } })
+  assert.equal((await rpc('hello', { protocol: 1 })).result.settingsUpToDate, true)
+  assert.deepEqual((await rpc('settings.pending')).result.steps, [])
+})
+
+test('broker: invalid or incomplete recap and concurrent edits cannot partially save', async (t) => {
+  const { rpc, file } = broker(t)
+  fs.writeFileSync(file, '{"handback":{"enabled":false},"settingsUpToDate":true}')
+  const original = fs.readFileSync(file, 'utf8')
+  // Missing answers take precedence over a stale stored flag.
+  assert.equal((await rpc('hello', { protocol: 1 })).result.settingsUpToDate, false)
+  const plan = (await rpc('settings.pending')).result
+  for (const answers of [{}, { ...plan.answers, previewStartup: { choice: 'invalid' } }, { ...plan.answers, unknown: {} }]) {
+    assert.equal((await rpc('settings.configure', { revision: plan.revision, answers })).error.code, 'bad_request')
+    assert.equal(fs.readFileSync(file, 'utf8'), original)
+  }
+  fs.writeFileSync(file, original + '\n')
+  assert.equal((await rpc('settings.configure', { revision: plan.revision, answers: plan.answers })).error.code, 'conflict')
+  assert.equal((await rpc('settings.pending', { revision: plan.revision, answers: plan.answers })).error.code, 'conflict')
+  assert.equal(fs.readFileSync(file, 'utf8'), original + '\n')
+})
+
+test('broker: wizard re-evaluates conditional questions and drops hidden answers', async (t) => {
+  const { rpc } = broker(t)
+  const initial = (await rpc('settings.pending')).result
+  assert.equal(initial.steps.length, 5)
+  assert.deepEqual(initial.answers.handback, { enabled: false, effort: 'low' })
+  const enabled = (await rpc('settings.pending', { answers: { ...initial.answers, handback: { enabled: true } } })).result
+  assert.equal(enabled.steps.length, 6)
+  assert.equal(enabled.answers.handback.model, 'sonnet')
+  const disabled = (await rpc('settings.pending', { answers: { ...enabled.answers, handback: { enabled: false, model: 'opus', effort: 'max' } } })).result
+  assert.equal(disabled.steps.length, 5)
+  assert.deepEqual(disabled.answers.handback, { enabled: false, effort: 'low' })
+  assert.equal((await rpc('settings.configure', { revision: disabled.revision, answers: disabled.answers })).result.ok, true)
+})
+
 test('broker: hello, settings and model toggles edit config.json', async (t) => {
   const { rpc, file } = broker(t, { '/providers/opencode/models': () => ({ provider: 'opencode', pending: false, models: [{ model: 'go/a' }, { model: 'go/b' }] }) })
   const hello = (await rpc('hello', { protocol: 1 })).result
@@ -118,7 +172,7 @@ test('broker: hello, settings and model toggles edit config.json', async (t) => 
 
   const settings = (await rpc('settings.get')).result
   const items = settings.sections.flatMap((s: any) => s.items)
-  assert.deepEqual(settings.sections.map((s: any) => s.id), ['general', 'handback', 'retention', 'harnesses'])
+  assert.deepEqual(settings.sections.map((s: any) => s.id), ['general', ...availableFeatures().map((f) => f.id), 'retention', 'harnesses'])
   const model = items.find((i: any) => i.key === 'handback.model')
   assert.deepEqual(model.visibleWhen, { key: 'handback.enabled', equals: true })
   assert.ok(model.options.some((o: any) => o.value === 'sonnet'))
@@ -418,7 +472,7 @@ printf 'some ordinary output\\n'
 printf '@@bitfrost\\tdone\\tUnpacked\\t~/x/0.9.2\\n'
 printf '@@bitfrost\\twarn\\tSomething small\\t\\n'
 printf '@@bitfrost\\tdone\\tHelper\\trestarted\\n'
-[ "$1" = --from ] && [ -n "$BITFROST_INSTALL_EVENTS" ]
+[ "$1" = --from ] && [ "$BITFROST_INSTALL_EVENTS" = 1 ] && [ "$BITFROST_DEFER_SETTINGS" = 1 ]
 `)
   assert.deepEqual(lines.find((l) => l.id === 1).result, { ok: true, simulated: false })
   const steps = lines.filter((l) => l.method === 'update.step').map((l) => [l.params.index, l.params.state, l.params.label])

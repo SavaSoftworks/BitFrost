@@ -74,7 +74,7 @@ Profiles not listed get no subagents.
 
 Use Settings in `bitfrost config` to manage Claude profiles, official handback, history retention and app locations. `bitfrost setup` asks about options you haven't chosen; `bitfrost setup handback` lets you change handback.
 
-The installer and `bitfrost update` also ask about new options. Without an interactive terminal, new optional features remain disabled until configured; run `bitfrost setup` later. Claude mentions unchosen settings once.
+The installer and `bitfrost update` ask about new options. Updates from the TUI leave them for **Configure new settings** on Home. Use Up/Down or W/S to choose an answer, Left/Right or A/D to revisit steps, and Enter/E to continue. Review your choices and save at the final step; cancelling leaves them unanswered. You can also run `bitfrost setup` later. New optional features remain disabled until configured. Claude mentions unchosen settings once.
 
 ### How do I open the config screen?
 
@@ -109,6 +109,10 @@ Keyboard and mouse controls work over SSH. To turn off animation, set `BITFROST_
 ### Updating, or installing a specific version
 
 Run `bitfrost update`. It installs the latest release if it's newer than yours, and does nothing otherwise. The config screen (`bitfrost`) also checks when it opens and shows an Update button when there's a newer release; it installs it and reopens on the new version without leaving the screen.
+
+Install and update migrate your database and process existing history before activating the new release. This also happens when reinstalling with retained history. If agents are running, installation asks you to let them finish first. A migration failure stops installation and leaves the previous version active.
+
+Before migrating an existing database, BitFrost saves a private backup in `~/bitfrost-db-backups` (or `BITFROST_BACKUP_DIR`). Historical usage is rebuilt from the data still retained; already deleted history cannot be recovered. For a source checkout or a manually replaced installation, run `bitfrost migrate` before starting the daemon.
 
 For a specific version, run that release's installer. It installs its own version:
 

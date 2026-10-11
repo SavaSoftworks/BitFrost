@@ -34,6 +34,11 @@ namespace bf {
         Editor,
         Activate,
         Controls,
+        ConfigurationOption,
+        ConfigurationStep,
+        ConfigurationPrevious,
+        ConfigurationNext,
+        ConfigurationContinue,
         Back
     };
     struct Hit {

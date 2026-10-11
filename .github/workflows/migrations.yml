@@ -1,0 +1,60 @@
+# Copyright (C) 2026 Nick Germaine; SPDX-License-Identifier: GPL-3.0-only
+name: migrations
+on:
+  workflow_call:
+permissions:
+  contents: read
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            platform: linux-x64
+          - os: ubuntu-24.04-arm
+            platform: linux-arm64
+          - os: macos-latest
+            platform: darwin-universal
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and test the static COBOL engine (musl)
+        if: runner.os == 'Linux'
+        run: >
+          docker run --rm --volume "$PWD:/src" --workdir /src --env "OWNER=$(id -u):$(id -g)" alpine:3.24 sh -c
+          'apk add --no-cache build-base gnucobol sqlite-dev curl unzip file nodejs-current &&
+          ./release/build-migrations.sh --static dist/bitfrost-migrate &&
+          file dist/bitfrost-migrate | grep -q "statically linked" &&
+          node --test --disable-warning=ExperimentalWarning plugins/bitfrost/daemon/test/migration.spec.ts plugins/bitfrost/daemon/test/store.spec.ts;
+          status=$?;
+          chown -R "$OWNER" dist plugins/bitfrost/migrations/build 2>/dev/null;
+          exit $status'
+      - uses: actions/setup-node@v4
+        if: runner.os == 'macOS'
+        with:
+          node-version: 24
+      - name: Build and test the universal COBOL engine
+        if: runner.os == 'macOS'
+        run: |
+          brew install gnucobol
+          ./release/build-migrations.sh --static dist/bitfrost-migrate
+          lipo -info dist/bitfrost-migrate | grep -q x86_64
+          lipo -info dist/bitfrost-migrate | grep -q arm64
+          # Only system dylibs; users need no Homebrew or COBOL installation.
+          if otool -L dist/bitfrost-migrate | grep -E '/opt/homebrew|/usr/local|/src/'; then exit 1; fi
+          node --test --disable-warning=ExperimentalWarning plugins/bitfrost/daemon/test/migration.spec.ts plugins/bitfrost/daemon/test/store.spec.ts
+      - name: Name and checksum the migration binary
+        run: |
+          version=$(sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' plugins/bitfrost/.claude-plugin/plugin.json)
+          asset="bitfrost-migrate-$version-${{ matrix.platform }}"
+          mv dist/bitfrost-migrate "dist/$asset"
+          if command -v sha256sum >/dev/null 2>&1; then
+            (cd dist && sha256sum "$asset" >"$asset.sha256")
+          else
+            (cd dist && shasum -a 256 "$asset" >"$asset.sha256")
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: migrate-${{ matrix.platform }}
+          path: dist/bitfrost-migrate-*

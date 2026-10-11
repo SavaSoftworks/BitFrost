@@ -15,6 +15,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
+import { pendingFeatures } from '../features.ts'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const DAEMON = path.join(HERE, '..', 'bitfrostd.ts')
@@ -335,7 +336,7 @@ test('/health reports the handback setting, and none while the config is invalid
   writeConfig({ ...goodConfig(), handback: { enabled: true, model: 'sonnet', effort: 'low' } })
   const on = (await call('GET', '/health')).body
   assert.deepStrictEqual(on.handback, { model: 'claude-sonnet-5-5', effort: 'low' })
-  assert.deepStrictEqual(on.newSettings, [])
+  assert.deepStrictEqual(on.newSettings, pendingFeatures({ handback: {} }).map((f) => f.id))
   // Leases keep the last good config, but an opt-in setting reads as off.
   writeConfig('{"handback": ')
   const broken = (await call('GET', '/health')).body
@@ -344,7 +345,7 @@ test('/health reports the handback setting, and none while the config is invalid
   writeConfig(goodConfig())
   const unset = (await call('GET', '/health')).body
   assert.strictEqual(unset.handback, null)
-  assert.deepStrictEqual(unset.newSettings, ['handback'])
+  assert.deepStrictEqual(unset.newSettings, pendingFeatures({}).map((f) => f.id))
 })
 test('bad request bodies get 400, and oversized ones 413', async () => {
   const bad = await call('POST', '/leases', '{not json')

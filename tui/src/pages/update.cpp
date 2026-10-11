@@ -12,10 +12,11 @@
 
 namespace bf {
     void App::draw_update(Grid &grid, int menu_width, double opacity) {
-        if (update.version.empty()) {
+        if (update.version.empty() && !pending_settings) {
             return;
         }
-        constexpr int button_width = 10;
+        std::string label = pending_settings && !update.busy ? "Configure new settings" : "Update";
+        int button_width = std::min(grid.width - 6, text_width(label) + 4);
         constexpr double button_fade_seconds = 0.22;
         int right = grid.width - 3;
         int bottom = grid.height - 7;
@@ -24,7 +25,7 @@ namespace bf {
         auto button = [&](double fade) {
             int x = right - button_width;
             if (update.focused || update.busy) {
-                highlight(grid, x, bottom, button_width, "Update", clock, fade, 2);
+                highlight(grid, x, bottom, button_width, label, clock, fade, 2);
                 for (int column = x; column < right; ++column) {
                     grid.put(column, bottom - 1, "▄", blend(mosaic(column, bottom * 2 - 1, clock, 1), fade));
                     grid.put(column, bottom + 1, "▀", blend(mosaic(column, bottom * 2 + 2, clock, 1), fade));
@@ -33,11 +34,14 @@ namespace bf {
                     emitters.push_back({x, bottom * 2 - 1, 4, fade, inner_region(grid)});
                 }
             } else {
-                grid.text(x + 2, bottom, "Update", blend(blue, fade));
+                grid.text(x + 2, bottom, ellipsis(label, button_width - 4), blend(blue, fade));
             }
         };
         if (!update.busy) {
-            std::string notice = ellipsis("New version available: " + update.version, width);
+            std::string notice = ellipsis(
+                pending_settings ? "New settings available" : "New version available: " + update.version,
+                width
+            );
             grid.text(right - text_width(notice), bottom - 2, notice, blend(dim, opacity));
             button(opacity);
             hits.add(

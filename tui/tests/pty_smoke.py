@@ -6,6 +6,7 @@
 
 import argparse
 import codecs
+import errno
 import fcntl
 import json
 import os
@@ -49,6 +50,36 @@ def wait_stopped(process, drain):
             raise AssertionError("UI exited instead of suspending")
         drain(0.02)
     raise AssertionError("UI did not stop after suspend")
+
+
+def wait_exited(process, master, output, timeout=3):
+    # Waiting without reading can fill Darwin's PTY queue while a frame or the
+    # signal handler's terminal restoration sequence is still being written.
+    deadline = time.monotonic() + timeout
+    while process.poll() is None:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise subprocess.TimeoutExpired(process.args, timeout)
+        if select.select([master], [], [], min(0.05, remaining))[0]:
+            try:
+                chunk = os.read(master, 65536)
+            except OSError as error:
+                if error.errno != errno.EIO:
+                    raise
+                chunk = b""
+            output.extend(chunk)
+    # poll() may observe exit before the final restoration bytes were consumed.
+    while select.select([master], [], [], 0)[0]:
+        try:
+            chunk = os.read(master, 65536)
+        except OSError as error:
+            if error.errno != errno.EIO:
+                raise
+            break
+        if not chunk:
+            break
+        output.extend(chunk)
+    return process.returncode
 
 
 def cleanup_process(process, master):
@@ -875,7 +906,7 @@ def run(binary, broker, measure=False, snapshots=None, no_anim=False):
             key(b"q")
             key(b"q", 0.3)
             os.write(master, b"q")
-            process.wait(timeout=3)
+            wait_exited(process, master, output)
             drain(0.05)
             assert process.returncode == 0, "UI did not exit cleanly"
             assert_terminal_restored(slave, original, "Terminal settings were not restored")
@@ -926,7 +957,7 @@ def check_error_page_and_signals(binary):
                 os.write(master, action)
             else:
                 os.kill(process.pid, action)
-            process.wait(timeout=3)
+            wait_exited(process, master, data)
             assert process.returncode == 0, "Signal or escape did not exit cleanly"
             assert_terminal_restored(slave, original, "Signal or escape did not restore terminal")
         finally:
@@ -957,7 +988,10 @@ def check_mouse_signal_cleanup(binary):
                     data.extend(os.read(master, 65536))
             assert b"\x1b[?1006h\x1b[?1003h" in data, "Animated home did not enable mouse before signal"
             os.kill(process.pid, action)
-            process.wait(timeout=3)
+            try:
+                wait_exited(process, master, data)
+            except subprocess.TimeoutExpired as error:
+                raise AssertionError(f"UI did not exit after {signal.Signals(action).name}") from error
             while select.select([master], [], [], 0)[0]:
                 data.extend(os.read(master, 65536))
             assert b"\x1b[?1003l\x1b[?1006l" in data, "Signal did not disable mouse"
@@ -1000,7 +1034,7 @@ def check_mouse_opt_out(binary):
             os.kill(process.pid, signal.SIGCONT)
             drain(0.12)
             os.kill(process.pid, signal.SIGTERM)
-            process.wait(timeout=3)
+            wait_exited(process, master, data)
             drain(0.05)
             assert_terminal_restored(slave, original, "Mouse opt-out exit did not restore terminal")
             assert b"\x1b[?1003" not in data and b"\x1b[?1006" not in data, "Mouse opt-out sent mouse modes"
@@ -1103,7 +1137,7 @@ def run_mouse_path(binary, no_anim):
             back()
             assert "Models" in screen.text() and "Providers" not in screen.text(), "Mouse Back did not return home"
             back(0.05)
-            process.wait(timeout=3)
+            wait_exited(process, master, output)
             drain(0.05)
             assert process.returncode == 0 and terminal_settings(slave) == original, "Mouse path did not restore terminal"
             assert output.rfind(b"\x1b[?1003l\x1b[?1006l") > output.rfind(b"\x1b[?1006h\x1b[?1003h"), "Mouse path exit left reporting on"
@@ -1209,7 +1243,7 @@ def run_update_path(binary, no_anim, failure=None, no_mouse=False):
                     drain(0.2)
                     assert len(output) == before, "Reload lost the command-line animation opt-out"
             os.write(master, b"q")
-            process.wait(timeout=3)
+            wait_exited(process, master, output)
             drain(0.05)
             assert process.returncode == 0 and terminal_settings(slave) == original, "Update path did not restore original terminal settings"
             if no_mouse:
@@ -1224,6 +1258,77 @@ def run_update_path(binary, no_anim, failure=None, no_mouse=False):
             os.close(slave)
     print("Simulated update " + (failure + " fallback" if failure else "and in-place exec reload") +
           (" with CLI opt-outs" if no_mouse else "") + " passed")
+
+
+def run_configuration_path(binary, no_anim, snapshots=None):
+    master, slave = pty.openpty()
+    fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 120, 0, 0))
+    original = terminal_settings(slave)
+    screen, output = Screen(), bytearray()
+    with tempfile.TemporaryDirectory(prefix="bitfrost-tui-configuration-") as temporary:
+        log = Path(temporary) / "requests.ndjson"
+        env = dict(os.environ, TERM="xterm-256color", COLORTERM="truecolor",
+                   BITFROST_TUI_BROKER="node " + str(Path(__file__).with_name("fake-broker.mjs").resolve()),
+                   BITFROST_FAKE_LOG=str(log), BITFROST_FAKE_NEW_SETTINGS="1")
+        env.pop("BITFROST_NO_ANIM", None)
+        env.pop("BITFROST_PRETEND_VERSION", None)
+        process = subprocess.Popen([str(binary)] + (["--no-anim"] if no_anim else []),
+                                   stdin=slave, stdout=slave, stderr=slave, env=env)
+
+        def drain(seconds):
+            deadline = time.monotonic() + seconds
+            while time.monotonic() < deadline:
+                ready, _, _ = select.select([master], [], [], max(0, deadline - time.monotonic()))
+                if ready:
+                    data = os.read(master, 65536)
+                    output.extend(data)
+                    screen.feed(data)
+
+        def key(value):
+            os.write(master, value)
+            drain(0.15)
+
+        try:
+            drain(0.5)
+            assert "Configure new settings" in screen.text(), "Pending settings action missing"
+            key(b"de")
+            assert "1 • 2 • 3 • 4 • Confirm" in screen.text(), "Stepper header missing"
+            key(b"s")
+            assert "Compact" in screen.selected(), "W/S did not choose a wizard option"
+            screen.save(snapshots, "configuration-question")
+            key(b"e")
+            key(b"a")
+            assert "Compact" in screen.selected(), "A did not revisit the saved draft"
+            key(b"\t")
+            assert "Previous / Next step" in screen.text(), "Wizard controls are missing"
+            key(b"\t")
+            key(b"d")
+            key(b"e")
+            key(b"e")
+            key(b"e")
+            assert "Review your choices" in screen.text(), "Wizard recap missing"
+            assert "Compact" in screen.text() and "Preview startup" in screen.text(), "Recap omitted answers"
+            screen.save(snapshots, "configuration-recap")
+            requests = [json.loads(line) for line in log.read_text().splitlines()]
+            assert not any(r["method"] == "settings.configure" for r in requests), "Draft was committed early"
+            key(b"q")
+            assert "Configure new settings" in screen.text(), "Cancel lost pending settings"
+            key(b"e")
+            for _ in range(4):
+                key(b"e")
+            key(b"e")
+            assert "Configure new settings" not in screen.text(), "Successful recap did not clear pending settings"
+            writes = [json.loads(line) for line in log.read_text().splitlines()
+                      if json.loads(line)["method"] == "settings.configure"]
+            assert len(writes) == 1 and len(writes[0]["params"]["answers"]) == 4, "Recap did not save all four answers together"
+            key(b"q")
+            wait_exited(process, master, output)
+            assert_terminal_restored(slave, original, "Configuration path did not restore terminal")
+        finally:
+            cleanup_process(process, master)
+            os.close(master)
+            os.close(slave)
+    print("New settings wizard navigation, recap, cancellation and save passed")
 
 
 if __name__ == "__main__":
@@ -1246,6 +1351,7 @@ if __name__ == "__main__":
     check_mouse_signal_cleanup(args.binary.resolve())
     check_mouse_opt_out(args.binary.resolve())
     run_mouse_path(args.binary.resolve(), args.no_anim)
+    run_configuration_path(args.binary.resolve(), args.no_anim, args.snapshots)
     run_update_path(args.binary.resolve(), args.no_anim)
     run_update_path(args.binary.resolve(), args.no_anim, "unset")
     run_update_path(args.binary.resolve(), args.no_anim, "exec")

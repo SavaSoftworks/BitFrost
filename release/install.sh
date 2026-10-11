@@ -20,6 +20,11 @@ main() {
   DATA=${XDG_DATA_HOME:-$HOME/.local/share}/bitfrost
   BIN_DIR=${BITFROST_BIN_DIR:-$HOME/.local/bin}
   CONFIG=${XDG_CONFIG_HOME:-$HOME/.config}/bitfrost/config.json
+  DB_DATA=${BITFROST_DATA_DIR:-}
+  if [ -z "$DB_DATA" ]; then
+    if [ "$(uname -s)" = Darwin ]; then DB_DATA=$HOME/Library/Application\ Support/BitFrost
+    else DB_DATA=$DATA; fi
+  fi
 
   case "$(uname -s) $(uname -m)" in
     "Linux x86_64") tui_platform=linux-x64 ;;
@@ -46,6 +51,9 @@ main() {
     esac
   done
   [ -n "$version" ] || [ -n "$from" ] || version=$RELEASE
+  # Local releases can be rebuilt without changing their version. Always use
+  # the supplied files instead of an earlier installation with the same name.
+  [ -z "$from" ] || force=1
 
   need tar
   mkdir -p "$DATA/versions"
@@ -97,8 +105,10 @@ main() {
   fi
 
   if [ -d "$DATA/versions/$version" ] && [ -z "$force" ]; then
+    root=$DATA/versions/$version
     note "Already unpacked" "$(short "$DATA/versions/$version")"
     add_tui "$DATA/versions/$version"
+    add_migrator "$DATA/versions/$version"
   else
     mkdir "$tmp/x"
     task "Unpacking" "$base" tar -xzf "$tmp/$base" -C "$tmp/x" || die "can't unpack $base: $(cat "$tmp/log")"
@@ -108,16 +118,31 @@ main() {
     inside=$(sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' "$manifest")
     [ "$inside" = "$version" ] || die "$base holds version '$inside', not $version"
     add_tui "$root"
-    # Renames, so a version folder is never half there. A running helper keeps
-    # only the files it already opened, so it is restarted below.
+    add_migrator "$root"
+  fi
+
+  [ ! -e "$DATA/current" ] || [ -L "$DATA/current" ] || die "$DATA/current isn't a link; move it away and run this again"
+  mkdir -p "$BIN_DIR"
+  link=$BIN_DIR/bitfrost
+  [ ! -e "$link" ] || [ -L "$link" ] || die "$link exists and isn't a link; move it away and run this again"
+  # Migrate before activating the new files, even after an uninstall that kept
+  # history. The shell keeps the data lock until installation finishes.
+  migration_entry=$root/plugins/bitfrost/bin/bitfrostd
+  if [ -f "$root/plugins/bitfrost/migrations/src/runner.cob" ]; then
+    event running "Database" "checking schema and processing pending migrations"
+    "$migration_entry" migrate --install-lock &
+    migration_job=$!
+    wait "$migration_job" || die "database migration failed; the new version was not activated"
+    migration_job=
+    done_ "Database" "schema and data are current"
+  fi
+
+  if [ "$root" != "$DATA/versions/$version" ]; then
     if [ -d "$DATA/versions/$version" ]; then
       mv "$DATA/versions/$version" "$tmp/old"
-      mv "$root" "$DATA/versions/$version"
-      done_ "Unpacked again" "$(short "$DATA/versions/$version")"
-    else
-      mv "$root" "$DATA/versions/$version"
-      done_ "Unpacked" "$(short "$DATA/versions/$version")"
     fi
+    mv "$root" "$DATA/versions/$version"
+    done_ "Unpacked" "$(short "$DATA/versions/$version")"
   fi
 
   # Only replace a link. mv would put the new link inside a real folder.
@@ -156,16 +181,23 @@ main() {
 
   # The release just unpacked asks about its own new settings, so this script needs no list of them.
   # No terminal (3) or Ctrl+C (130) leaves them for later; anything else already said what went wrong.
+  # Older TUI updaters only request events; they still own the terminal input.
+  defer_settings=${BITFROST_DEFER_SETTINGS:-}
+  [ -z "${BITFROST_INSTALL_EVENTS:-}" ] || defer_settings=1
   code=0
-  "$link" setup --new || code=$?
+  BITFROST_DEFER_SETTINGS=$defer_settings "$link" setup --new || code=$?
   case $code in
     0) ;;
-    3 | 130) settings_needed=1 ;;
+    3 | 130)
+      settings_needed=1
+      done_ "New settings" "configure in the TUI or run bitfrost setup"
+      ;;
     *) warn "Could not ask about new settings, so they stay off. Once that's fixed, run: bitfrost setup" ;;
   esac
 
-  # A same-version reinstall is not newer, so Claude would never restart the helper.
-  if [ -n "$force" ] && [ "$previous" = "$version" ] && "$link" status >/dev/null 2>&1; then
+  # Legacy releases had no install-time migration and may still have a helper up.
+  if [ ! -f "$DATA/versions/$version/plugins/bitfrost/migrations/src/runner.cob" ] &&
+    [ -n "$force" ] && [ "$previous" = "$version" ] && "$link" status >/dev/null 2>&1; then
     if task "Helper" "restarting it" "$link" restart; then
       done_ "Helper" "restarted"
     else
@@ -308,6 +340,37 @@ verify() {
   [ "$(echo "$got" | tr 'A-F' 'a-f')" = "$(echo "$want" | tr 'A-F' 'a-f')" ] || die "$2 failed its checksum"
 }
 
+# New releases require their migration executable. Releases without the engine
+# retain their original install behavior.
+add_migrator() {
+  [ -f "$1/plugins/bitfrost/migrations/src/runner.cob" ] || return 0
+  migration_bin=$1/plugins/bitfrost/migrations/bin/bitfrost-migrate
+  [ ! -x "$migration_bin" ] || return 0
+  [ -n "$tui_platform" ] || die "no database migration binary for $(uname -s) $(uname -m)"
+  migration_name=bitfrost-migrate-$version-$tui_platform
+  mkdir -p "$tmp/migrate" "${migration_bin%/*}"
+  migration_src=
+  if [ -n "$from" ]; then
+    migration_src=$(dirname "$from")/$migration_name
+    [ -f "$migration_src" ] || migration_src=
+  fi
+  if [ -n "$migration_src" ]; then
+    [ -f "$migration_src.sha256" ] || die "missing checksum: $migration_src.sha256"
+    cp "$migration_src" "$tmp/migrate/$migration_name"
+    cp "$migration_src.sha256" "$tmp/migrate/$migration_name.sha256"
+  else
+    need curl
+    migration_url=https://github.com/$REPO/releases/download/v$version
+    fetch "$migration_url/$migration_name" "$tmp/migrate/$migration_name" || die "can't download $migration_name"
+    curl -fsSL -o "$tmp/migrate/$migration_name.sha256" "$migration_url/$migration_name.sha256" || die "can't download migration checksum"
+  fi
+  verify "$tmp/migrate" "$migration_name"
+  cp "$tmp/migrate/$migration_name" "$migration_bin"
+  chmod 755 "$migration_bin"
+  [ "$(uname -s)" != Darwin ] || xattr -d com.apple.quarantine "$migration_bin" 2>/dev/null || :
+  done_ "Database migrator" "$migration_name"
+}
+
 # Puts the BitFrost TUI binary into $1/tui/bin. A release made before the TUI, or a
 # platform it isn't built for, only warns; a binary that won't download or verify stops the install.
 add_tui() {
@@ -375,12 +438,13 @@ Installs or updates bitfrost (the Claude Code plugin and the bitfrostd helper).
   install.sh [--version X.Y.Z] [--from bitfrost-X.Y.Z.tar.gz] [--force] [--no-plugin]
 
   --version X.Y.Z   install this release instead of the default
-  --from FILE       install a tarball you already have (checked against FILE.sha256 if it's there)
-  --force           unpack again even if this version is already there, and restart the helper
+  --from FILE       install a local tarball, replacing any cached copy of that version
+  --force           unpack again even if this version is already there
   --no-plugin       leave Claude Code alone (only unpack and link the helper)
 
 With no --version, a release's copy of this script installs that release, and
 any other copy installs the latest. Set BITFROST_REPO=owner/repo to install from a fork.
+Local tarballs are checked against FILE.sha256 when it is present.
 EOF2
 }
 
@@ -435,8 +499,16 @@ die() {
 }
 
 job=
+migration_job=
 cleanup() {
   [ -z "$job" ] || kill "$job" 2>/dev/null || true
+  if [ -n "$migration_job" ]; then
+    kill -TERM "$migration_job" 2>/dev/null || true
+    wait "$migration_job" 2>/dev/null || true
+  fi
+  if [ -f "$DB_DATA/daemon.lock" ] && [ "$(cat "$DB_DATA/daemon.lock")" = "$$" ]; then
+    rm -f "$DB_DATA/daemon.lock"
+  fi
   rm -rf "$tmp"
   [ -z "$TTY" ] || printf '\033[?25h'
 }

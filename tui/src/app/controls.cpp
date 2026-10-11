@@ -30,7 +30,14 @@ namespace bf {
             }
             rows.emplace_back(std::move(action), std::move(keyboard));
         };
-        add("Navigation", editing() ? "Left/Right" : "WASD, Arrows", "D-pad/L-Stick");
+        add(configuration.open ? "Choose answer" : "Navigation",
+            editing()            ? "Left/Right"
+            : configuration.open ? "W/S, Up/Down"
+                                 : "WASD, Arrows",
+            "D-pad/L-Stick");
+        if (configuration.open) {
+            add("Previous / Next step", "A/D, Left/Right", "D-pad/L-Stick");
+        }
         add("Confirm/Select", editing() ? "Enter" : "Enter/E", controller ? controller->confirm() : "");
         add("Back/Cancel", editing() ? "Esc" : "Esc/Q", controller ? controller->cancel() : "");
         if (editing()) {
@@ -38,7 +45,7 @@ namespace bf {
             add("Delete character", "Backspace / Delete");
             add("Enter text", "Keyboard");
         } else {
-            if (current != Page::Home) {
+            if (current != Page::Home || configuration.open) {
                 if (mouse_enabled || controller) {
                     add("Scroll", mouse_enabled ? "Mouse wheel" : "—", "R-Stick");
                 }

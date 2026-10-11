@@ -10,6 +10,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { Store, hourOf } from '../store.ts'
+import { migrate } from './migrate.ts'
 import { summarize } from '../usage.ts'
 import { Session } from '../session.ts'
 
@@ -326,6 +327,7 @@ test('version one schema upgrades and backfills approvals without native item id
   s.push({ type: 'turn_started', turnId: 't' })
   s.push({ type: 'approval_requested', approvalId: 'approval', itemId: 'native', kind: 'command', title: 'Run', detail: 'ls' })
   store.db.exec('DROP INDEX messages_approval; ALTER TABLE messages DROP COLUMN approval_id; ALTER TABLE turns DROP COLUMN pgid; ALTER TABLE turns DROP COLUMN process_identity; PRAGMA user_version=1')
+  migrate(file)
   const upgraded = new Store(file)
   try {
     assert.equal(upgraded.degraded, false)
@@ -341,6 +343,7 @@ test('version two adds per-session client input ids and keeps legacy receipts', 
   const { store, file, session } = setup(t), s = session()
   const legacy = s.acceptInput('legacy', 'queued')
   store.db.exec('DROP INDEX inbox_client_input; ALTER TABLE inbox DROP COLUMN client_input_id; PRAGMA user_version=2')
+  migrate(file)
   const upgraded = new Store(file)
   try {
     assert.equal(upgraded.degraded, false)
@@ -443,6 +446,7 @@ test('a version 6 store gets back the cached input it took off turns whose event
   // As version 6 left them: uncached input on the old turn, context growth on the recent one.
   store.db.exec(`DELETE FROM events WHERE session_id='old'; UPDATE turns SET input_tokens=100 WHERE id='o'; UPDATE turns SET input_tokens=300 WHERE id='r';
     ALTER TABLE sessions ADD COLUMN context INTEGER DEFAULT 0; PRAGMA user_version=6`)
+  migrate(file)
   const upgraded = new Store(file)
   try {
     const turns = upgraded.db.prepare("SELECT id, input_tokens FROM turns ORDER BY id").all().map((r: any) => [r.id, r.input_tokens])
@@ -466,6 +470,7 @@ test('a version 5 store counts repeated usage reports once, from the events it s
   store.db.exec(`UPDATE turns SET input_tokens=400, output_tokens=30, requests=3 WHERE id='k'; UPDATE turns SET input_tokens=500 WHERE id='g';
     DELETE FROM events WHERE session_id='gone'; ALTER TABLE sessions DROP COLUMN request_input; ALTER TABLE sessions DROP COLUMN request_output;
     UPDATE usage_hours SET input_tokens=input_tokens*9; PRAGMA user_version=5`)
+  migrate(file)
   const upgraded = new Store(file)
   try {
     const byId = new Map(upgraded.subagentsById(['kept', 'gone']).map((r) => [r.id, r]))
@@ -489,6 +494,7 @@ test('a store from before hourly usage rebuilds it from the sessions and turns i
   s.push({ type: 'usage', inputTokens: 40, outputTokens: 2, cachedInputTokens: 0 })
   finish(s, 't')
   store.db.exec('DROP TABLE usage_hours; CREATE TABLE model_usage (day TEXT); PRAGMA user_version=4')
+  migrate(file)
   const upgraded = new Store(file)
   try {
     assert.equal(upgraded.degraded, false)
@@ -515,21 +521,17 @@ test('session time counts when a session closes, and a reopen takes it back', (t
   assert.deepEqual([total.closedSessions, total.sessionMs, total.sessions], [0, 0, 1])
 })
 
-test('an empty or missing usage table is filled from stored sessions on start, once', (t) => {
+test('startup uses the installed rollups without rebuilding an empty table', (t) => {
   const { store, file, session } = setup(t), s = session()
   s.push({ type: 'turn_started', turnId: 't' })
   s.push({ type: 'usage', inputTokens: 12, outputTokens: 3, cachedInputTokens: 0 })
   finish(s, 't')
   store.db.exec('DELETE FROM usage_hours')
-  let reopened = new Store(file)
-  try { assert.equal(usageOf(reopened).total.inputTokens, 12) } finally { reopened.close() }
-  reopened = new Store(file)
-  try { assert.equal(usageOf(reopened).total.inputTokens, 12, 'not counted twice') } finally { reopened.close() }
-  reopened = new Store(file)
-  reopened.db.exec('DROP TABLE usage_hours')
-  reopened.close()
-  reopened = new Store(file)
-  try { assert.equal(usageOf(reopened).total.turns, 1) } finally { reopened.close() }
+  const reopened = new Store(file)
+  try {
+    assert.equal(usageOf(reopened).total.inputTokens, 0, 'startup must not backfill historical data')
+    assert.equal(reopened.db.prepare('SELECT COUNT(*) AS n FROM usage_hours').get()!.n, 0)
+  } finally { reopened.close() }
 })
 
 test('the daily series reaches back to first use, up to a year', (t) => {
@@ -560,6 +562,8 @@ test('sessions keep their own totals as events arrive, and old stores fill them 
   const totals = () => (store.db.prepare('SELECT tokens,cached_tokens,turns,tool_calls FROM sessions WHERE id=?').get('worker') as any)
   assert.deepEqual({ ...totals() }, { tokens: 35, cached_tokens: 10, turns: 1, tool_calls: 2 })
   store.db.exec('ALTER TABLE sessions DROP COLUMN tokens; ALTER TABLE sessions DROP COLUMN tool_calls')
+  store.db.exec('PRAGMA user_version=3')
+  migrate(file)
   const reopened = new Store(file)
   try {
     const [row] = reopened.subagentsById(['worker'])
@@ -644,6 +648,7 @@ test('version 7 migration corrects repeated input across turns without losing ex
   store.db.exec("UPDATE turns SET input_tokens=0,output_tokens=0,cached_tokens=0,requests=0 WHERE id='two'; UPDATE sessions SET tokens=110,cached_tokens=20; UPDATE usage_hours SET input_tokens=100,output_tokens=10,cached_tokens=20,requests=1; PRAGMA user_version=7")
   const ancient = hourOf(Date.now() - 400 * 86400_000)
   store.db.prepare('INSERT INTO usage_hours (harness,model,hour,input_tokens,output_tokens,requests,first_at,last_at,updated_at) VALUES (?,?,?,700,70,7,?,?,1)').run('fake', 'm', ancient, ancient, ancient)
+  migrate(file)
   const upgraded = new Store(file)
   try {
     assert.equal(upgraded.degraded, false)
@@ -668,6 +673,7 @@ test('version 7 migration preserves the expired prefix of a turn and corrects a 
     finish(s, 'second')
     store.db.exec("UPDATE turns SET input_tokens=0,output_tokens=0,requests=0 WHERE id='second'; UPDATE sessions SET tokens=2230; UPDATE usage_hours SET input_tokens=2200,output_tokens=30,requests=2; PRAGMA user_version=7")
     store.db.exec(removeWholeTurn ? "DELETE FROM events WHERE turn_id='first'" : "DELETE FROM events WHERE seq<=2")
+    migrate(file)
     const upgraded = new Store(file)
     try {
       assert.equal(upgraded.degraded, false)
@@ -685,4 +691,14 @@ test('legacy usage groups only adjacent equal reports within a turn', (t) => {
   s.push({ type: 'turn_started', turnId: 't' })
   for (const inputTokens of [100, 200, 100, 100]) s.push({ type: 'usage', inputTokens, outputTokens: 10, cachedInputTokens: 0 })
   assert.deepEqual(store.summary(s).usage, { inputTokens: 400, outputTokens: 30, cachedTokens: 0, requests: 3 })
+})
+
+
+test('an older persisted schema refuses startup without changing structure or data', (t) => {
+  const { store, file } = setup(t)
+  store.db.exec('PRAGMA user_version=3')
+  const before = store.db.prepare('SELECT * FROM sqlite_master ORDER BY name').all()
+  assert.throws(() => new Store(file), /schema 3 needs migration.*bitfrost migrate/)
+  assert.equal(store.db.prepare('PRAGMA user_version').get()!.user_version, 3)
+  assert.deepEqual(store.db.prepare('SELECT * FROM sqlite_master ORDER BY name').all(), before)
 })

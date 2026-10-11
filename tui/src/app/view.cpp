@@ -92,6 +92,9 @@ namespace bf {
             version,
             helper_missing ? 1 : message_opacity()
         );
+        if (configuration.open) {
+            draw_configuration(grid);
+        }
         if (controls_open) {
             draw_controls(grid);
         }

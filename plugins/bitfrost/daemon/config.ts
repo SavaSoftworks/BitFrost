@@ -9,13 +9,12 @@ import os from 'node:os'
 import path from 'node:path'
 import { execFile, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { fileURLToPath } from 'node:url'
 import type { ProviderEnv } from './provider.ts'
 import { PROVIDERS } from './providers/index.ts'
-import { EFFORTS, claudeModelId, pendingFeatures } from './features.ts'
+import { FEATURES, EFFORTS, claudeModelId, pendingFeatures } from './features.ts'
+export { VERSION } from './version.ts'
 
 const HOME = os.homedir()
-const HERE = path.dirname(fileURLToPath(import.meta.url))
 export const RUN_DIR = process.env.BITFROST_RUNTIME_DIR || path.join(process.env.XDG_RUNTIME_DIR ?? `/tmp/bitfrost-${process.getuid!()}`, 'bitfrost')
 export const DATA_DIR = process.env.BITFROST_DATA_DIR || (process.platform === 'darwin'
   ? path.join(HOME, 'Library', 'Application Support', 'BitFrost')
@@ -26,7 +25,6 @@ export const LOCK = path.join(RUN_DIR, 'bitfrostd.lock')
 export const DATA_LOCK = path.join(DATA_DIR, 'daemon.lock')
 export const CACHE = path.join(process.env.XDG_CACHE_HOME ?? path.join(HOME, '.cache'), 'bitfrost', 'agents.json')
 export const CONFIG = path.join(process.env.XDG_CONFIG_HOME ?? path.join(HOME, '.config'), 'bitfrost', 'config.json')
-export const VERSION = JSON.parse(fs.readFileSync(path.join(HERE, '..', '.claude-plugin', 'plugin.json'), 'utf8')).version as string
 
 export function log(msg: string) {
   const line = `${new Date().toISOString()} ${msg}\n`
@@ -56,6 +54,7 @@ export type Config = {
   handback?: { model: string; effort: string | null } | null
   // Features still to be asked about (bitfrost setup).
   newSettings?: string[]
+  settingsUpToDate?: boolean
 }
 
 export function loadConfig(file = CONFIG): Config {
@@ -74,19 +73,21 @@ export function loadConfig(file = CONFIG): Config {
   const providers = { ...(cfg.providers ?? {}) }
   if (cfg.codexBin) providers.codex = { bin: cfg.codexBin, ...providers.codex }
   if (cfg.zcodeDir) providers.zcode = { dir: cfg.zcodeDir, ...providers.zcode }
+  const newSettings = problems.length ? [] : pendingFeatures(cfg).map((f) => f.id)
   return {
     allowedProfiles: (cfg.allowedProfiles ?? ['~/.claude']).map(canonical),
     providers,
     retention: { eventsDays: cfg.retention?.eventsDays ?? 30, messagesDays: cfg.retention?.messagesDays ?? 180 },
     handback: cfg.handback?.enabled === true && cfg.handback.model ? { model: claudeModelId(cfg.handback.model), effort: cfg.handback.effort ?? null } : null,
     // An invalid config is reported on its own, so it asks nothing.
-    newSettings: problems.length ? [] : pendingFeatures(cfg).map((f) => f.id),
+    newSettings,
+    settingsUpToDate: newSettings.length === 0,
     error: problems.length ? `${file} is invalid: ${problems.join('; ')}` : null,
     warnings: warnings.map((w) => `${file}: ${w}`),
   }
 }
 
-const TOP_KEYS = new Set(['allowedProfiles', 'providers', 'codexBin', 'zcodeDir', 'retention', 'handback'])
+const TOP_KEYS = new Set(['allowedProfiles', 'providers', 'codexBin', 'zcodeDir', 'retention', 'settingsUpToDate', ...FEATURES.map((f) => f.key)])
 const isObject = (v: unknown) => typeof v === 'object' && v !== null && !Array.isArray(v)
 const isStrings = (v: unknown) => Array.isArray(v) && v.every((x) => typeof x === 'string')
 
@@ -95,6 +96,7 @@ export function validateConfig(cfg: unknown, known: string[] = PROVIDERS.map((p)
   const warnings: string[] = []
   if (!isObject(cfg)) return { errors: ['it must be a JSON object'], warnings }
   const c = cfg as Record<string, any>
+  if ('settingsUpToDate' in c && typeof c.settingsUpToDate !== 'boolean') errors.push('settingsUpToDate must be a boolean')
   for (const key of Object.keys(c)) if (!TOP_KEYS.has(key)) warnings.push(`unknown key ${key}`)
   if ('allowedProfiles' in c && !isStrings(c.allowedProfiles)) errors.push('allowedProfiles must be a list of strings')
   for (const key of ['codexBin', 'zcodeDir']) if (key in c && typeof c[key] !== 'string') errors.push(`${key} must be a string`)

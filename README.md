@@ -65,7 +65,7 @@ Node.js 23.6+, Claude Code, and at least one [supported coding app](#supported-h
    curl -fsSL https://github.com/SavaSoftworks/BitFrost/releases/latest/download/install.sh | sh
    ```
 
-   It installs the plugin into Claude Code and adds a `bitfrost` command to `~/.local/bin`.
+   It installs the plugin into Claude Code and adds a `bitfrost` command to `~/.local/bin`. Existing databases are backed up and migrated during installation, including any required history processing.
 
 3. For GLM, sign in to ZCode's command-line tool ([command in the guide](GUIDE.md#zcode-glm)), then run once:
 
@@ -87,7 +87,7 @@ If you use a Claude profile other than `~/.claude` (`CLAUDE_CONFIG_DIR`), see [C
 bitfrost update
 ```
 
-If the new release has settings you haven't chosen, it asks about them at the end.
+If the new release has settings you haven't chosen, the CLI asks about them at the end. Updates from the TUI show **Configure new settings** on the main menu, with a recap before saving.
 
 <br />
 

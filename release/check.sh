@@ -17,7 +17,7 @@ main() {
   failed=0
 
   echo "Shell scripts"
-  for script in release/build.sh release/build-tui.sh release/check.sh release/install.sh plugins/bitfrost/bin/bitfrostd; do
+  for script in release/build.sh release/build-tui.sh release/build-migrations.sh release/build-cpu.sh release/check.sh release/install.sh plugins/bitfrost/bin/bitfrostd; do
     if sh -n "$script"; then
       ok "$script"
     else
@@ -25,7 +25,7 @@ main() {
     fi
   done
   if command -v shellcheck >/dev/null 2>&1; then
-    if shellcheck release/build.sh release/build-tui.sh release/check.sh release/install.sh plugins/bitfrost/bin/bitfrostd; then
+    if shellcheck release/build.sh release/build-tui.sh release/build-migrations.sh release/build-cpu.sh release/check.sh release/install.sh plugins/bitfrost/bin/bitfrostd; then
       ok "shellcheck"
     else
       bad "shellcheck"

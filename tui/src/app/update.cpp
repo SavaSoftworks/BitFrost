@@ -16,6 +16,10 @@ namespace bf {
     }
 
     void App::start_update() {
+        if (pending_settings && !update.busy) {
+            start_configuration();
+            return;
+        }
         if (update.busy || update.version.empty()) {
             return;
         }

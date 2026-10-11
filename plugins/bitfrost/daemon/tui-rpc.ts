@@ -16,7 +16,8 @@ import type { Readable, Writable } from 'node:stream'
 import { CONFIG, VERSION, loadConfig } from './config.ts'
 import { call, start } from './client.ts'
 import { EditError, edit, getPath, readRaw, revision, setModel, setPath, setProvider, type Raw } from './configedit.ts'
-import { FEATURES, optionsFor, shows, type Question } from './features.ts'
+import { FEATURES, availableFeatures, optionsFor, pendingFeatures, shows, type Question } from './features.ts'
+import { settingsPlan } from './settings-plan.ts'
 import { PROVIDERS } from './providers/index.ts'
 import { FETCH_MS, latestVersion, newer } from './update.ts'
 import { summarize } from './usage.ts'
@@ -86,7 +87,7 @@ type Item = {
 
 // The Settings page, built from config.json as it is now. found holds where each
 // harness was found, when the helper could say.
-export async function settingsOf(raw: Raw, found: Record<string, string | null> | null = null): Promise<{ id: string; title: string; items: Item[] }[]> {
+export async function settingsOf(raw: Raw, found: Record<string, string | null> | null = null, version = VERSION): Promise<{ id: string; title: string; items: Item[] }[]> {
   const sections = [
     {
       id: 'general',
@@ -94,7 +95,7 @@ export async function settingsOf(raw: Raw, found: Record<string, string | null> 
       items: [{ key: 'allowedProfiles', group: 'Claude profiles', label: 'Allowed', help: 'Claude Code profile folders allowed to use BitFrost subagents.', type: 'list', value: getPath(raw, 'allowedProfiles') ?? ['~/.claude'], default: ['~/.claude'] }] as Item[],
     },
   ]
-  for (const f of FEATURES) {
+  for (const f of availableFeatures(version)) {
     const answers = (raw[f.key] && typeof raw[f.key] === 'object' ? raw[f.key] : {}) as Raw
     const items: Item[] = []
     for (const q of [...f.questions, ...(f.more ?? [])]) {
@@ -287,7 +288,8 @@ export async function serveRpc(opts: { input?: Readable; output?: Writable; file
       if (p?.protocol !== PROTOCOL) throw new RpcError('bad_request', `this helper speaks protocol ${PROTOCOL}; update BitFrost`)
       const r = await daemon.call('GET', '/health')
       known = revision(file)
-      return { protocol: PROTOCOL, version: VERSION, configPath: file, revision: known, configError: loadConfig(file).error, daemon: { up: r?.status === 200 } }
+      const config = loadConfig(file)
+      return { protocol: PROTOCOL, version: VERSION, configPath: file, revision: known, configError: config.error, settingsUpToDate: config.settingsUpToDate, daemon: { up: r?.status === 200 } }
     },
     'config.get': () => {
       const c = loadConfig(file)
@@ -374,6 +376,24 @@ export async function serveRpc(opts: { input?: Readable; output?: Writable; file
       if (typeof p.enabled !== 'boolean') throw new RpcError('bad_request', 'providers.set needs enabled')
       return change(p.revision, (raw) => setProvider(raw, f.id, p.enabled))
     },
+    'settings.pending': async (p) => {
+      const rev = revision(file)
+      if (typeof p?.revision === 'string' && p.revision !== rev) throw new EditError('conflict', 'Config changed; reopen Configure new settings')
+      const raw = readRaw(file)
+      if (typeof raw === 'string') throw new RpcError('config_invalid', `${file} is invalid: ${raw}`)
+      return { revision: rev, ...await settingsPlan(raw, p?.answers ?? {}) }
+    },
+    'settings.configure': async (p) => {
+      if (typeof p?.revision !== 'string') throw new RpcError('bad_request', 'settings.configure needs a revision')
+      if (p.revision !== revision(file)) throw new EditError('conflict', 'Config changed; reopen Configure new settings')
+      const raw = readRaw(file)
+      if (typeof raw === 'string') throw new RpcError('config_invalid', `${file} is invalid: ${raw}`)
+      const plan = await settingsPlan(raw, p?.answers, true)
+      return change(p.revision, (current) => {
+        Object.assign(current, plan.answers)
+        current.settingsUpToDate = pendingFeatures(current).length === 0
+      })
+    },
     'settings.get': async () => {
       const raw = readRaw(file)
       if (typeof raw === 'string') throw new RpcError('config_invalid', `${file} is invalid: ${raw}`)
@@ -381,7 +401,7 @@ export async function serveRpc(opts: { input?: Readable; output?: Writable; file
       const job = findApps()
       const late = await Promise.race([job.then(() => false), new Promise<boolean>((r) => setTimeout(r, FOUND_WAIT_MS, true).unref())])
       if (late) void job.then((changed) => { if (changed) notify('settings.updated', {}) })
-      return { revision: revision(file), sections: await settingsOf(raw, found) }
+      return { revision: revision(file), settingsUpToDate: pendingFeatures(raw).length === 0, sections: await settingsOf(raw, found) }
     },
     'settings.set': async (p) => {
       const raw = readRaw(file)
@@ -392,6 +412,7 @@ export async function serveRpc(opts: { input?: Readable; output?: Writable; file
       return change(p.revision, (r) => {
         setPath(r, item.key, value)
         completeFeature(r, item.key)
+        r.settingsUpToDate = pendingFeatures(r).length === 0
       })
     },
   }
@@ -461,7 +482,7 @@ export async function serveRpc(opts: { input?: Readable; output?: Writable; file
         fs.writeFileSync(script, await r.text())
         show('done', 'Installer', `install.sh from v${version}`)
       }
-      const child = spawn('sh', [script, ...args], { env: { ...process.env, BITFROST_INSTALL_EVENTS: '1' }, stdio: ['ignore', 'pipe', 'pipe'] })
+      const child = spawn('sh', [script, ...args], { env: { ...process.env, BITFROST_INSTALL_EVENTS: '1', BITFROST_DEFER_SETTINGS: '1' }, stdio: ['ignore', 'pipe', 'pipe'] })
       let failure = ''
       let errors = ''
       child.stderr.on('data', (c) => (errors = (errors + c).slice(-2000)))

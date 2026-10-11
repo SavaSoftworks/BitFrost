@@ -11,7 +11,14 @@
 set -eu
 
 tui=1
-[ "${1:-}" != --no-tui ] || tui=
+migrator=1
+for arg in "$@"; do
+  case $arg in
+    --no-tui) tui= ;;
+    --no-migrator) migrator= ;;
+    *) echo "build.sh: unknown option: $arg" >&2; exit 1 ;;
+  esac
+done
 
 cd "$(dirname "$0")/.."
 
@@ -36,9 +43,17 @@ out=dist/$name
 rm -rf "$out" "dist/$name.tar.gz" "dist/$name.tar.gz.sha256" dist/install.sh
 mkdir -p "$out/.claude-plugin" "$out/plugins"
 cp LICENSE README.md "$out/"
-cp -R plugins/bitfrost "$out/plugins/"
+tar -C plugins --exclude=bitfrost/migrations/build --exclude=bitfrost/migrations/bin \
+  -cf "$out/plugin.tar" bitfrost
+tar -xf "$out/plugin.tar" -C "$out/plugins"
+rm "$out/plugin.tar"
+mkdir -p "$out/release"
+cp release/build-migrations.sh release/build-cpu.sh \
+  release/generate-migrations.mjs "$out/release/"
 rm -rf "$out/plugins/bitfrost/daemon/test" \
   "$out/plugins/bitfrost/hooks/register.test.ts" \
+  "$out/plugins/bitfrost/migrations/build" \
+  "$out/plugins/bitfrost/migrations/test" \
   "$out/plugins/bitfrost/.claude-plugin/types" \
   "$out/plugins/bitfrost/tsconfig.json"
 
@@ -77,5 +92,11 @@ if [ -n "$tui" ] && [ -n "$platform" ]; then
   else
     echo "build.sh: no cmake, so the config screen wasn't built" >&2
   fi
+fi
+if [ -n "$migrator" ] && [ -n "$platform" ]; then
+  asset=bitfrost-migrate-$version-$platform
+  release/build-migrations.sh --static "dist/$asset" >&2
+  if command -v sha256sum >/dev/null 2>&1; then sum="sha256sum"; else sum="shasum -a 256"; fi
+  (cd dist && $sum "$asset" >"$asset.sha256")
 fi
 echo "$version"

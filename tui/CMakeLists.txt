@@ -29,6 +29,7 @@ add_executable(bitfrost-tui
     src/app/app.cpp
     src/app/view.cpp
     src/app/controls.cpp
+    src/app/configuration.cpp
     src/app/status.cpp
     src/app/update.cpp
     src/pages/home.cpp
@@ -77,6 +78,7 @@ add_executable(bitfrost-tui
     tests/scroll_selftest.cpp
     tests/gamepad_selftest.cpp
     tests/controls_selftest.cpp
+    tests/configuration_selftest.cpp
 )
 target_compile_features(bitfrost-tui PRIVATE cxx_std_20)
 target_compile_options(bitfrost-tui PRIVATE -Wall -Wextra -Wpedantic)

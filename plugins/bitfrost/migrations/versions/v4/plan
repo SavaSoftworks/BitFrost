@@ -1,0 +1,4 @@
+# Resources used by main.cob, checked before the database opens.
+columns
+totals.sql
+indexes.sql

@@ -1,0 +1,6 @@
+sessions|tokens|INTEGER DEFAULT 0
+sessions|cached_tokens|INTEGER DEFAULT 0
+sessions|turns|INTEGER DEFAULT 0
+sessions|tool_calls|INTEGER DEFAULT 0
+sessions|active_ms|INTEGER DEFAULT 0
+sessions|changed_at|INTEGER DEFAULT 0

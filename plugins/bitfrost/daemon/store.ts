@@ -36,21 +36,11 @@ const open = (file: string) => {
 }
 const USAGE = ['sessions', 'closed_sessions', 'session_ms', 'turns', 'failed_turns', 'turn_ms', 'requests', 'input_tokens', 'output_tokens', 'cached_tokens'] as const
 // updated_at is a store-wide stamp that only grows, so a reader can ask for what changed since it last looked.
-const HOURS_TABLE = `CREATE TABLE IF NOT EXISTS usage_hours (
-  harness TEXT, model TEXT, hour INTEGER, sessions INTEGER DEFAULT 0, closed_sessions INTEGER DEFAULT 0, session_ms INTEGER DEFAULT 0,
-  turns INTEGER DEFAULT 0, failed_turns INTEGER DEFAULT 0, turn_ms INTEGER DEFAULT 0, requests INTEGER DEFAULT 0,
-  input_tokens INTEGER DEFAULT 0, output_tokens INTEGER DEFAULT 0, cached_tokens INTEGER DEFAULT 0,
-  first_at INTEGER, last_at INTEGER, updated_at INTEGER DEFAULT 0, PRIMARY KEY(harness, model, hour)
-) WITHOUT ROWID;
-CREATE INDEX IF NOT EXISTS usage_hours_changed ON usage_hours(harness, model, updated_at)`
-// Per-session totals kept as events arrive, so listing sessions never scans turns or messages.
-const SESSION_TOTALS = ['tokens', 'cached_tokens', 'turns', 'tool_calls', 'active_ms', 'changed_at', 'request_input', 'request_output'] as const
-
-// Only used to correct version 7's rollups without dropping usage whose events expired.
-function historicalBill(last: { input: number; output: number }, e: { inputTokens?: number; outputTokens?: number; cachedInputTokens?: number }) {
-  const input = e.inputTokens ?? 0, output = e.outputTokens ?? 0, cached = e.cachedInputTokens ?? 0
-  if (input !== last.input) return { input, output, cached, requests: 1, last: { input, output } }
-  return { input: 0, output: Math.max(0, output - last.output), cached: 0, requests: 0, last: { input, output: Math.max(last.output, output) } }
+// Persistent upgrades run in the COBOL engine during installation.
+export class MigrationRequiredError extends Error {
+  constructor(version: number) {
+    super(`BitFrost database schema ${version} needs migration to ${VERSION}; run bitfrost migrate or reinstall this release`)
+  }
 }
 type Usage = Extract<AgentEvent, { type: 'usage' }>
 type Bill = { input: number; output: number; cached: number; requests: number }
@@ -126,10 +116,12 @@ export class Store {
         this.error = `BitFrost database version ${version} is newer than this daemon; persistence disabled`
         try { this.log(this.error) } catch {}
       }
+      if (version > 0 && version < VERSION) throw new MigrationRequiredError(version)
       if (exclusive && !this.degraded) this.db.exec('PRAGMA locking_mode=EXCLUSIVE')
       this.initialize()
       this.opened = true
     } catch (error) {
+      if (error instanceof MigrationRequiredError) { try { this.database.close() } catch {}; throw error }
       if (exclusive && /database is locked|database is busy/i.test((error as Error).message)) { try { this.database.close() } catch {}; throw error }
       this.degrade(error)
     }
@@ -156,157 +148,19 @@ export class Store {
     this.walMode()
     this.db.exec('PRAGMA synchronous=NORMAL; PRAGMA busy_timeout=5000; PRAGMA foreign_keys=ON')
     this.db.exec('BEGIN IMMEDIATE')
-    // Read under the write lock, so a second helper starting at once sees the finished schema.
-    const from = (this.db.prepare('PRAGMA user_version').get() as Row).user_version
-    const usageColumns = (this.stmt('PRAGMA table_info(usage_hours)').all() as Row[]).map((r) => r.name)
-    this.db.exec(`
-      CREATE TABLE IF NOT EXISTS sessions (
-        id TEXT PRIMARY KEY, harness TEXT, agent TEXT, model TEXT, effort TEXT, plan TEXT,
-        native_ref TEXT, cwd TEXT, title TEXT, claude_session TEXT, claude_agent TEXT,
-        lease_id TEXT, parent_mode TEXT, state TEXT, created_at INTEGER, updated_at INTEGER,
-        closed_at INTEGER, close_reason TEXT, last_seq INTEGER NOT NULL DEFAULT 0
-      );
-      CREATE TABLE IF NOT EXISTS turns (
-        id TEXT PRIMARY KEY, session_id TEXT REFERENCES sessions(id) ON DELETE CASCADE,
-        seq_start INTEGER, seq_end INTEGER, started_at INTEGER, ended_at INTEGER,
-        status TEXT, end_reason TEXT, provider_error_code TEXT, error TEXT, plan TEXT,
-        final_text TEXT, input_tokens INTEGER DEFAULT 0, output_tokens INTEGER DEFAULT 0,
-        cached_tokens INTEGER DEFAULT 0, requests INTEGER DEFAULT 0
-      );
-      CREATE TABLE IF NOT EXISTS events (
-        session_id TEXT REFERENCES sessions(id) ON DELETE CASCADE, seq INTEGER, ts INTEGER,
-        type TEXT, turn_id TEXT, body TEXT, PRIMARY KEY(session_id, seq)
-      ) WITHOUT ROWID;
-      CREATE TABLE IF NOT EXISTS messages (
-        id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT REFERENCES sessions(id) ON DELETE CASCADE,
-        turn_id TEXT REFERENCES turns(id) ON DELETE CASCADE, seq INTEGER, ts INTEGER,
-        role TEXT, kind TEXT, item_id TEXT, name TEXT, text TEXT, status TEXT, detail TEXT, approval_id TEXT
-      );
-      CREATE TABLE IF NOT EXISTS inbox (
-        id TEXT PRIMARY KEY, session_id TEXT REFERENCES sessions(id) ON DELETE CASCADE,
-        ts INTEGER, sender TEXT, text TEXT, delivery TEXT, state TEXT,
-        consumed_turn TEXT, consumed_at INTEGER, client_input_id TEXT
-      );
-      CREATE TABLE IF NOT EXISTS usage_requests (
-        session_id TEXT REFERENCES sessions(id) ON DELETE CASCADE, request_id TEXT,
-        input_tokens INTEGER, output_tokens INTEGER, cached_tokens INTEGER, requests INTEGER,
-        PRIMARY KEY(session_id,request_id)
-      ) WITHOUT ROWID;
-      ${HOURS_TABLE};
-      CREATE INDEX IF NOT EXISTS turns_session ON turns(session_id, seq_start);
-      CREATE INDEX IF NOT EXISTS messages_session ON messages(session_id, seq);
-      CREATE INDEX IF NOT EXISTS messages_turn ON messages(session_id, turn_id, seq);
-      CREATE INDEX IF NOT EXISTS messages_active ON messages(session_id,turn_id,seq DESC) WHERE status='running' AND kind IN ('tool','command');
-      CREATE INDEX IF NOT EXISTS messages_item ON messages(session_id, item_id);
-      CREATE INDEX IF NOT EXISTS inbox_session ON inbox(session_id, state, ts);
-    `)
     try {
-      const columns = this.stmt('PRAGMA table_info(turns)').all() as Row[]
-      if (!columns.some((r) => r.name === 'pgid')) this.db.exec('ALTER TABLE turns ADD COLUMN pgid INTEGER; ALTER TABLE turns ADD COLUMN process_identity TEXT')
-      const messages = this.stmt('PRAGMA table_info(messages)').all() as Row[]
-      if (!messages.some((r) => r.name === 'approval_id')) {
-        this.db.exec("ALTER TABLE messages ADD COLUMN approval_id TEXT; UPDATE messages SET approval_id=COALESCE(json_extract(detail,'$.approvalId'),(SELECT json_extract(body,'$.approvalId') FROM events WHERE events.session_id=messages.session_id AND events.seq=messages.seq AND events.type='approval_requested')) WHERE kind='approval'")
-      }
-      const inbox = this.stmt('PRAGMA table_info(inbox)').all() as Row[]
-      if (!inbox.some((r) => r.name === 'client_input_id')) this.db.exec('ALTER TABLE inbox ADD COLUMN client_input_id TEXT')
-      // Session totals, filled once from the turns and messages a session already has.
-      const sessionColumns = (this.stmt('PRAGMA table_info(sessions)').all() as Row[]).map((r) => r.name)
-      const missingTotals = SESSION_TOTALS.filter((c) => !sessionColumns.includes(c))
-      if (missingTotals.length) {
-        this.db.exec(missingTotals.map((c) => `ALTER TABLE sessions ADD COLUMN ${c} INTEGER DEFAULT 0;`).join(' ') + `
-          UPDATE sessions SET
-            tokens=(SELECT COALESCE(SUM(input_tokens+output_tokens),0) FROM turns WHERE session_id=sessions.id),
-            cached_tokens=(SELECT COALESCE(SUM(cached_tokens),0) FROM turns WHERE session_id=sessions.id),
-            turns=(SELECT COUNT(*) FROM turns WHERE session_id=sessions.id AND ended_at IS NOT NULL),
-            active_ms=(SELECT COALESCE(SUM(ended_at-started_at),0) FROM turns WHERE session_id=sessions.id AND ended_at IS NOT NULL),
-            tool_calls=(SELECT COUNT(*) FROM messages WHERE session_id=sessions.id AND kind IN ('tool','command','file_change')),
-            changed_at=COALESCE(updated_at,created_at,0);`)
-      }
-      if (from < 8) this.recountTokens(from, from === 7 && [...USAGE, 'updated_at'].every((c) => usageColumns.includes(c)))
-      this.db.exec('CREATE INDEX IF NOT EXISTS sessions_created ON sessions(created_at, id); CREATE INDEX IF NOT EXISTS sessions_changed ON sessions(changed_at); CREATE INDEX IF NOT EXISTS turns_open ON turns(session_id) WHERE ended_at IS NULL')
-      // Usage outlives retention, so build it from what's still kept when it's new, empty or
-      // missing a column. Older stores had a daily model_usage; the hourly table replaces it.
-      const rebuild = from < 7 || [...USAGE, 'updated_at'].some((c) => !usageColumns.includes(c)) || !this.stmt('SELECT 1 FROM usage_hours LIMIT 1').get()
-      if (rebuild) this.db.exec(`
-        DROP TABLE IF EXISTS model_usage;
-        DROP TABLE IF EXISTS usage_hours;
-        ${HOURS_TABLE};
-        INSERT INTO usage_hours (harness,model,hour,sessions,first_at,last_at)
-          SELECT harness,model,${LOCAL_HOUR('created_at')},COUNT(*),MIN(created_at),MAX(created_at) FROM sessions WHERE created_at IS NOT NULL GROUP BY 1,2,3;
-        INSERT INTO usage_hours (harness,model,hour,closed_sessions,session_ms,first_at,last_at)
-          SELECT harness,model,${LOCAL_HOUR('closed_at')},COUNT(*),SUM(MAX(0,closed_at-created_at)),MIN(closed_at),MAX(closed_at)
-          FROM sessions WHERE closed_at IS NOT NULL AND created_at IS NOT NULL GROUP BY 1,2,3
-        ON CONFLICT(harness,model,hour) DO UPDATE SET closed_sessions=closed_sessions+excluded.closed_sessions,session_ms=session_ms+excluded.session_ms,
-          first_at=MIN(first_at,excluded.first_at),last_at=MAX(last_at,excluded.last_at);
-        INSERT INTO usage_hours (harness,model,hour,turns,failed_turns,turn_ms,requests,input_tokens,output_tokens,cached_tokens,first_at,last_at)
-          SELECT s.harness,s.model,${LOCAL_HOUR('t.started_at')},SUM(t.ended_at IS NOT NULL),SUM(t.status='failed'),
-            COALESCE(SUM(t.ended_at-t.started_at),0),SUM(t.requests),SUM(t.input_tokens),SUM(t.output_tokens),SUM(t.cached_tokens),MIN(t.started_at),MAX(COALESCE(t.ended_at,t.started_at))
-          FROM turns t JOIN sessions s ON s.id=t.session_id WHERE t.started_at IS NOT NULL GROUP BY 1,2,3
-        ON CONFLICT(harness,model,hour) DO UPDATE SET turns=turns+excluded.turns,failed_turns=failed_turns+excluded.failed_turns,
-          turn_ms=turn_ms+excluded.turn_ms,requests=requests+excluded.requests,input_tokens=input_tokens+excluded.input_tokens,
-          output_tokens=output_tokens+excluded.output_tokens,cached_tokens=cached_tokens+excluded.cached_tokens,
-          first_at=MIN(first_at,excluded.first_at),last_at=MAX(last_at,excluded.last_at);
-        UPDATE usage_hours SET updated_at=1;
-      `)
-      this.db.exec(`CREATE INDEX IF NOT EXISTS messages_approval ON messages(session_id,approval_id); CREATE UNIQUE INDEX IF NOT EXISTS inbox_client_input ON inbox(session_id,client_input_id) WHERE client_input_id IS NOT NULL; PRAGMA user_version=${VERSION}; COMMIT`)
-    } catch (e) { this.db.exec('ROLLBACK'); throw e }
-  }
-
-  // Count again using request identities where available, and within-turn legacy reports otherwise.
-  // Turns whose events expired keep their totals; version 7 hourly rollups receive only the correction.
-  // Version 6 counted only context growth and left those turns their uncached input, so add the cache back.
-  private recountTokens(from: number, adjustHours: boolean) {
-    this.db.exec('DELETE FROM usage_requests')
-    if (from === 6) {
-      this.db.exec("UPDATE turns SET input_tokens=input_tokens+cached_tokens WHERE id NOT IN (SELECT turn_id FROM events WHERE type='usage' AND turn_id IS NOT NULL)")
-    }
-    if ((this.stmt('PRAGMA table_info(sessions)').all() as Row[]).some((r) => r.name === 'context')) this.db.exec('ALTER TABLE sessions DROP COLUMN context')
-    const turns = new Map<string, Bill & { old: Bill; sessionId: string; at: number }>()
-    const last = new Map<string, { input: number; output: number }>()
-    const owners = new Map<string, Row>()
-    for (const r of this.db.prepare("SELECT session_id,turn_id,ts,body FROM events WHERE type='usage' ORDER BY session_id,seq").iterate() as Iterable<Row>) {
-      let e: Row
-      try { e = JSON.parse(r.body) } catch { continue }
-      const old = historicalBill(last.get(r.session_id) ?? { input: 0, output: 0 }, e)
-      last.set(r.session_id, old.last)
-      if (r.turn_id == null) continue
-      const b = this.billUsage(r.session_id, r.turn_id, e as Usage)
-      if (adjustHours) {
-        const owner = owners.get(r.session_id) ?? this.stmt('SELECT harness,model FROM sessions WHERE id=?').get(r.session_id) as Row
-        owners.set(r.session_id, owner)
-        this.addUsage(owner.harness, owner.model, r.ts, { input_tokens: b.input - old.input, output_tokens: b.output - old.output,
-          cached_tokens: b.cached - old.cached, requests: b.requests - old.requests })
-      }
-      const t = turns.get(r.turn_id) ?? { input: 0, output: 0, cached: 0, requests: 0,
-        old: { input: 0, output: 0, cached: 0, requests: 0 }, sessionId: r.session_id, at: r.ts }
-      t.input += b.input
-      t.output += b.output
-      t.cached += b.cached
-      t.requests += b.requests
-      for (const key of ['input', 'output', 'cached', 'requests'] as const) t.old[key] += old[key]
-      turns.set(r.turn_id, t)
-    }
-    const turn = this.db.prepare('UPDATE turns SET input_tokens=?,output_tokens=?,cached_tokens=?,requests=? WHERE id=?')
-    for (const [id, t] of turns) {
-      if (from === 7) {
-        const stored = this.stmt('SELECT input_tokens AS input,output_tokens AS output,cached_tokens AS cached,requests,seq_start FROM turns WHERE id=?').get(id) as Row
-        const complete = this.stmt("SELECT 1 FROM events WHERE session_id=? AND seq=? AND type='turn_started'").get(t.sessionId, stored.seq_start)
-        if (!complete) {
-          // Retention can remove the beginning of a long turn. Preserve its earlier bill.
-          for (const key of ['input', 'output', 'cached', 'requests'] as const) t[key] += stored[key] - t.old[key]
-        } else if (adjustHours) {
-          // The previous turn's events may be gone, so its last usage cannot seed the old replay.
-          const owner = owners.get(t.sessionId)!
-          this.addUsage(owner.harness, owner.model, t.at, { input_tokens: t.old.input - stored.input,
-            output_tokens: t.old.output - stored.output, cached_tokens: t.old.cached - stored.cached, requests: t.old.requests - stored.requests })
-        }
-      }
-      turn.run(t.input, t.output, t.cached, t.requests, id)
-    }
-    const session = this.db.prepare('UPDATE sessions SET request_input=?,request_output=? WHERE id=?')
-    for (const [id, l] of last) session.run(l.input, l.output, id)
-    this.db.exec(`UPDATE sessions SET tokens=(SELECT COALESCE(SUM(input_tokens+output_tokens),0) FROM turns WHERE session_id=sessions.id),
-      cached_tokens=(SELECT COALESCE(SUM(cached_tokens),0) FROM turns WHERE session_id=sessions.id)`)
+      const from = (this.db.prepare('PRAGMA user_version').get() as Row).user_version
+      if (from === 0) {
+        // Empty development/test and memory stores need only the current schema.
+        // Existing databases never run migrations or historical data work here.
+        if (this.db.prepare("SELECT 1 FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' LIMIT 1").get()) throw new MigrationRequiredError(from)
+        this.db.exec(fs.readFileSync(new URL(`../migrations/versions/v${VERSION}/schema.sql`, import.meta.url), 'utf8'))
+        this.db.exec(fs.readFileSync(new URL(`../migrations/versions/v${VERSION}/indexes.sql`, import.meta.url), 'utf8'))
+        this.db.exec(`PRAGMA user_version=${VERSION}`)
+      } else if (from !== VERSION) throw new MigrationRequiredError(from)
+      this.db.prepare('SELECT u.updated_at,s.request_input,r.request_id FROM usage_hours u,sessions s,usage_requests r LIMIT 0').all()
+      this.db.exec('COMMIT')
+    } catch (error) { this.db.exec('ROLLBACK'); throw error }
   }
 
   private billUsage(sessionId: string, turnId: string, e: Usage) {

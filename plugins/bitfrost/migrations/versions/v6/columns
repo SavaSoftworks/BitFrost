@@ -1,0 +1,3 @@
+sessions|request_input|INTEGER DEFAULT 0
+sessions|request_output|INTEGER DEFAULT 0
+sessions|context|INTEGER DEFAULT 0

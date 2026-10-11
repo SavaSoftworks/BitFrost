@@ -68,6 +68,21 @@ namespace bf {
             std::vector<UpdateStep> steps;
             double age = 0;
         } update;
+        bool pending_settings = false;
+        struct Configuration {
+            bool open = false, busy = false, committing = false;
+            int step = 0, option = 0, direction = 0, generation = 0;
+            int first = 0, visible = 1;
+            Json::Array steps;
+            ListView option_view;
+            Json answers = Json::Object{};
+            std::string revision, error;
+        } configuration;
+        void start_configuration();
+        void configuration_input(const Input &);
+        void configuration_move(int direction);
+        void receive_configuration(const std::string &method, const std::string &context, const Json &reply);
+        void draw_configuration(Grid &);
         ModelList model_rows;
         int section_selection = 0, item_selection = 0, popup_selection = 0;
         GroupedList setting_rows, helper_rows;

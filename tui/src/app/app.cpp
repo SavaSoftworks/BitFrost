@@ -183,7 +183,10 @@ namespace bf {
                 request("settings.get", Json::Object{}, {}, true);
             }
             if (method == "config.changed") {
-                message = "Config changed; refreshing";
+                message =
+                    configuration.open ? "Config changed; reopen Configure new settings" : "Config changed; refreshing";
+                configuration.open = false;
+                ++configuration.generation;
                 reload();
             }
             return;
@@ -199,6 +202,10 @@ namespace bf {
             return;
         }
         auto &result = reply["result"];
+        if (request_info.method == "settings.pending" || request_info.method == "settings.configure") {
+            receive_configuration(request_info.method, request_info.context, reply);
+            return;
+        }
         if (request_info.method == "subagents.page") {
             receive_history(result, request_info.params, request_info.context, !reply["error"].null());
             if (!reply["error"].null() && request_info.context.starts_with(std::to_string(history_generation) + ':')) {
@@ -250,6 +257,10 @@ namespace bf {
         }
         if (request_info.method == "hello") {
             revision = result["revision"].str();
+            pending_settings = !result["settingsUpToDate"].boolean(true);
+            if (!pending_settings && update.version.empty()) {
+                update.focused = false;
+            }
             if (result["protocol"].integer() != 1) {
                 message = "Unsupported BitFrost helper protocol";
             } else if (!result["configError"].null()) {
@@ -296,6 +307,7 @@ namespace bf {
             loading_helper = false;
         } else if (request_info.method == "settings.get") {
             revision = result["revision"].str();
+            pending_settings = !result["settingsUpToDate"].boolean(!pending_settings);
             sections = result["sections"].array();
             loading_settings = false;
             move(section_selection, 0, sections.size());
@@ -541,6 +553,10 @@ namespace bf {
             }
             return;
         }
+        if (configuration.open) {
+            configuration_input(event);
+            return;
+        }
         if (event.key == Key::ScrollUp || event.key == Key::ScrollDown) {
             if (transition != Transition::Exit && !saving) {
                 int delta = event.key == Key::ScrollUp ? -1 : 1;
@@ -568,7 +584,7 @@ namespace bf {
             return;
         }
         if (current == Page::Home) {
-            if (!update.version.empty()) {
+            if (pending_settings || !update.version.empty()) {
                 if (update.focused) {
                     if (event.key == Key::Left || event.key == Key::Up) {
                         update.focused = false;

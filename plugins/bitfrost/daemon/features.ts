@@ -7,6 +7,7 @@
 // Settings that ask before they turn on. Each feature owns one top-level config
 // key, and is asked about while that key is missing, so installs, updates,
 // --from and --force all ask exactly what a user hasn't answered yet.
+import { VERSION, newer } from './version.ts'
 
 export type Option = { value: string; label: string; hint?: string }
 export type Answers = Record<string, unknown>
@@ -88,17 +89,30 @@ export const FEATURES: Feature[] = [
     ],
     defaults: { effort: 'low' },
   },
+  // Temporary, inert settings for exercising the 0.9.1 -> 0.9.2 setup flow.
+  ...[
+    { id: 'previewAppearance', title: 'Preview appearance', prompt: 'Which appearance would you prefer?', options: ['Classic', 'Compact', 'Spacious'] },
+    { id: 'previewNotifications', title: 'Preview notifications', prompt: 'Which notifications would you prefer?', options: ['None', 'Important only', 'All activity'] },
+    { id: 'previewHistory', title: 'Preview history', prompt: 'How would you prefer to group history?', options: ['By day', 'By project', 'By model'] },
+    { id: 'previewStartup', title: 'Preview startup', prompt: 'Which page would you prefer on startup?', options: ['Home', 'Models', 'Sessions'] },
+  ].map((demo): Feature => ({
+    id: demo.id, key: demo.id, since: '0.9.2', title: demo.title,
+    questions: [{ key: 'choice', type: 'choice', prompt: demo.prompt, label: demo.title,
+      help: 'Test setting only. This choice does not change BitFrost behavior.',
+      default: demo.options[0], options: demo.options.map((value) => ({ value, label: value })) }],
+  })),
 ]
 
 export const shows = (when: When | undefined, answers: Answers) =>
   !when || (typeof when === 'function' ? when(answers) : answers[when.key] === when.equals)
 
-export const findFeature = (id: string) => FEATURES.find((f) => f.id === id)
+export const availableFeatures = (version = VERSION) => FEATURES.filter((f) => !newer(f.since, version))
+export const findFeature = (id: string) => availableFeatures().find((f) => f.id === id)
 
 // Features whose key the config doesn't have yet.
-export const pendingFeatures = (config: unknown): Feature[] => {
+export const pendingFeatures = (config: unknown, version = VERSION): Feature[] => {
   const c = config && typeof config === 'object' && !Array.isArray(config) ? (config as Record<string, unknown>) : {}
-  return FEATURES.filter((f) => !(f.key in c))
+  return availableFeatures(version).filter((f) => !(f.key in c))
 }
 
 export async function optionsFor(q: Question, ctx: AskContext): Promise<Option[]> {

@@ -19,6 +19,24 @@ let statsTimer = null;
 let subagentsTimer = null;
 let watchedAgents = null;
 let settingsNotified = false;
+let newSettings = Boolean(process.env.BITFROST_FAKE_NEW_SETTINGS);
+function configurationPlan(draft = {})
+{
+    const answers = {};
+    const steps = [
+        ['previewAppearance', 'Preview appearance', ['Classic', 'Compact', 'Spacious']],
+        ['previewNotifications', 'Preview notifications', ['None', 'Important only', 'All activity']],
+        ['previewHistory', 'Preview history', ['By day', 'By project', 'By model']],
+        ['previewStartup', 'Preview startup', ['Home', 'Models', 'Sessions']],
+    ].map(([feature, title, choices]) => {
+        const value = draft[feature]?.choice ?? choices[0];
+        answers[feature] = {choice : value};
+        return {feature, key : 'choice', title, label : title, prompt : 'Which option would you prefer?',
+                help : 'Test setting only. This choice does not change BitFrost behavior.', value,
+                options : choices.map(value => ({value, label : value}))};
+    });
+    return {revision, answers, steps : newSettings ? steps : []};
+}
 let agentStamp = 1;
 let watchTicks = 0;
 const startedAt = Date.now() - 3 * 3600000;
@@ -193,7 +211,8 @@ const sections = await settingsOf({
     handback : {enabled : true, model : 'sonnet', effort : 'low'},
     providers : {opencode : {enabled : true}},
 }, {codex : '/usr/local/bin/codex', zcode : '/opt/ZCode', opencode : null,
-    omp : '/usr/local/bin/pi', gemini : '/usr/local/bin/gemini', crush : null});
+    omp : '/usr/local/bin/pi', gemini : '/usr/local/bin/gemini', crush : null},
+    newSettings ? '0.9.2' : '0.9.1');
 function totals(sessions, turns, tokens)
 {
     return {
@@ -274,6 +293,7 @@ function result(method, params)
             configPath : '/tmp/bitfrost-fake-config.json',
             revision,
             configError : null,
+            settingsUpToDate : !newSettings,
             daemon : {up : true}
         };
     case 'providers.list':
@@ -375,6 +395,12 @@ function result(method, params)
         watchStats(params.provider, rows);
         return {rows};
     }
+    case 'settings.pending':
+        return configurationPlan(params.answers);
+    case 'settings.configure':
+        newSettings = false;
+        revision = (++generation).toString(16).padStart(64, '0');
+        return {ok : true, revision, warnings : []};
     case 'settings.get':
         if (!settingsNotified)
         {
@@ -388,7 +414,7 @@ function result(method, params)
             }, 1000);
             timers.add(timer);
         }
-        return {revision, sections};
+        return {revision, settingsUpToDate : !newSettings, sections};
     case 'update.check':
         return {current : process.env.BITFROST_PRETEND_VERSION || '0.9.2', latest : '0.9.2',
                 available : Boolean(process.env.BITFROST_PRETEND_VERSION), error : null};

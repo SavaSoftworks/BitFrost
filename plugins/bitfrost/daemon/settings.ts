@@ -6,7 +6,8 @@
 
 // bitfrost setup for features: asks their questions and saves the answers in config.json.
 import { CONFIG } from './config.ts'
-import { readRaw, save } from './configedit.ts'
+import { readRaw, save, writeRaw } from './configedit.ts'
+import { VERSION } from './version.ts'
 import { askFeature, optionsFor, pendingFeatures, type Answers, type Feature } from './features.ts'
 import { asker, Cancelled, openTerminal, type Terminal } from './prompt.ts'
 import { done, fail, note, step, warn } from './ui.ts'
@@ -26,28 +27,40 @@ async function describe(f: Feature, answers: Answers, config: Record<string, any
 
 // Asks about the given features, or the unanswered ones when none are given.
 // newOnly is the installer's call: quiet when there's nothing to ask.
-export async function setupFeatures(opts: { features?: Feature[]; newOnly?: boolean; file?: string; terminal?: () => Terminal | null } = {}): Promise<number> {
+export async function setupFeatures(opts: { features?: Feature[]; newOnly?: boolean; file?: string; terminal?: () => Terminal | null; defer?: boolean; version?: string } = {}): Promise<number> {
   const file = opts.file ?? CONFIG
+  const version = opts.version ?? VERSION
+  const reconcile = () => {
+    const current = readRaw(file)
+    if (typeof current === 'string') return
+    const upToDate = pendingFeatures(current, version).length === 0
+    if (current.settingsUpToDate !== upToDate) writeRaw(file, { ...current, settingsUpToDate: upToDate })
+  }
   const raw = readRaw(file)
   if (typeof raw === 'string') {
     fail('setup', `${file} is invalid (${raw}); fix it, then run bitfrost setup again`)
     return 1
   }
-  const list = opts.features ?? pendingFeatures(raw)
+  const list = opts.features ?? pendingFeatures(raw, version)
+  reconcile()
   if (!list.length) {
     if (!opts.newOnly) note('Every setting is chosen. To change one, run bitfrost setup <name>.')
     return 0
   }
+  // TUI installs must not open /dev/tty while the screen owns raw input.
+  if (opts.defer ?? (opts.newOnly && process.env.BITFROST_DEFER_SETTINGS === '1')) return NEED_TERMINAL
   const term = (opts.terminal ?? openTerminal)()
   if (!term) {
     if (!opts.newOnly) fail('setup', 'this needs a terminal to ask its questions on')
     return NEED_TERMINAL
   }
   if (opts.newOnly) step('New settings')
+  let unanswered = false
   try {
     for (const f of list) {
       const answers = await askFeature(f, raw, asker(term))
       if (!answers) {
+        unanswered = true
         warn(`${f.title} has nothing to choose from yet; run bitfrost setup ${f.id} later`)
         continue
       }
@@ -57,6 +70,7 @@ export async function setupFeatures(opts: { features?: Feature[]; newOnly?: bool
         return 1
       }
       raw[f.key] = answers
+      reconcile()
       console.log()
       done(f.title, await describe(f, answers, raw))
     }
@@ -70,5 +84,5 @@ export async function setupFeatures(opts: { features?: Feature[]; newOnly?: bool
   } finally {
     term.close()
   }
-  return 0
+  return unanswered ? NEED_TERMINAL : 0
 }

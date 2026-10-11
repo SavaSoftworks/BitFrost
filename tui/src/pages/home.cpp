@@ -65,7 +65,12 @@ namespace bf {
         for (const HomeItem &item : home_items) {
             menu_width = std::max(menu_width, text_width(item.label) + 4);
         }
-        int menu_bottom = grid.height - 5;
+        // On narrow terminals the corner action sits below the menu instead of
+        // sharing its rows, so the longer configuration label cannot cover it.
+        int action_width = pending_settings && !update.busy ? 26 : 10;
+        bool stack_action =
+            (pending_settings || !update.version.empty()) && (grid.width - menu_width) / 2 - 6 < action_width;
+        int menu_bottom = grid.height - 5 - (stack_action ? 4 : 0);
         int menu_top = std::min(logo_bottom, menu_bottom - menu_height);
         int menu_y = menu_top + (menu_bottom - menu_top - menu_height) / 2 + 1;
         logo_boundary = {2, 4, grid.width - 2, (menu_y - 1) * 2};

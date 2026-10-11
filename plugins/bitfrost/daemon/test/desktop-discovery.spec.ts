@@ -77,6 +77,12 @@ test('Codex still prefers explicit configuration and the standalone CLI', (t) =>
 
 test('ZCode discovers complete macOS bundles and skips incomplete installs', (t) => {
   const { root, write, env } = fixture(t)
+  // A real Linux installation must not satisfy a missing macOS test fixture.
+  const stat = fs.statSync
+  t.mock.method(fs, 'statSync', (file: any, options?: any) => {
+    if (String(file).startsWith('/opt/ZCode/')) throw new Error('outside test fixture')
+    return stat(file, options)
+  })
   const apps = [path.join(root, 'System Applications'), path.join(root, 'User Applications')]
   write(path.join(apps[0], 'ZCode.app', 'Contents', 'Resources', 'glm', 'zcode.cjs'))
   const location = path.join(apps[1], 'ZCode.app')

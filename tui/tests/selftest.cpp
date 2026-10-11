@@ -36,6 +36,7 @@ namespace bf {
     void scroll_selftest();
     void gamepad_selftest();
     void controls_selftest();
+    void configuration_selftest();
     namespace {
         void check(bool condition, const char *name) {
             if (!condition) {
@@ -108,6 +109,7 @@ namespace bf {
             scroll_selftest();
             gamepad_selftest();
             controls_selftest();
+            configuration_selftest();
             for (auto [width, height] : {std::pair{120, 40}, {120, 24}, {80, 24}, {40, 18}, {120, 16}}) {
                 Grid branded(width, height);
                 PageLayout layout = sidebar_layout(branded, "Providers", "Models");
