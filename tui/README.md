@@ -21,7 +21,8 @@ How do I run the tests?
     ctest --test-dir tui/build --output-on-failure
     python3 tui/tests/pty_smoke.py tui/build/bitfrost-tui --measure
 
-The native build requires C++20 and CMake. PTY tests use Python and Node.
+The native build requires C++20 and CMake. Linux also requires the kernel input
+headers (`linux-headers` on Alpine) for gamepad support. PTY tests use Python and Node.
 Use --no-anim to disable animation. Use -DBITFROST_STATIC=ON for static linking.
 Use --resume to open the completed home screen without its intro, and
 --message=text to set the initial status message.

@@ -5,10 +5,19 @@
 // Public License, version 3 only. It comes with no warranty. See LICENSE.
 
 #include "json.hpp"
+#include <cerrno>
 #include <charconv>
 #include <cmath>
+#include <cstdlib>
+#include <iomanip>
 #include <limits>
+#include <locale.h>
+#include <locale>
+#include <sstream>
 #include <stdexcept>
+#ifdef __APPLE__
+#include <xlocale.h>
+#endif
 
 namespace bf {
     std::string utf8(uint32_t code_point) {
@@ -62,6 +71,19 @@ namespace bf {
         return true;
     }
     namespace {
+#ifndef BITFROST_FLOAT_CHARCONV
+        struct NumericLocale {
+            locale_t value = newlocale(LC_NUMERIC_MASK, "C", nullptr);
+            NumericLocale() {
+                if (!value) {
+                    throw std::runtime_error("Cannot create JSON numeric locale");
+                }
+            }
+            ~NumericLocale() {
+                freelocale(value);
+            }
+        };
+#endif
         struct Parser {
             std::string_view source;
             size_t position = 0;
@@ -275,10 +297,23 @@ namespace bf {
                     }
                 }
                 double number;
+#ifdef BITFROST_FLOAT_CHARCONV
                 auto conversion = std::from_chars(token.data(), token.data() + token.size(), number);
                 if (conversion.ec != std::errc() || !std::isfinite(number)) {
                     fail();
                 }
+#else
+                static const NumericLocale locale;
+                std::string terminated(token);
+                char *end = nullptr;
+                errno = 0;
+                number = strtod_l(terminated.c_str(), &end, locale.value);
+                // ERANGE also covers representable subnormals, which remain valid JSON numbers.
+                if (end != terminated.c_str() + terminated.size() || !std::isfinite(number) ||
+                    (errno == ERANGE && number == 0)) {
+                    fail();
+                }
+#endif
                 return number;
             }
         };
@@ -349,6 +384,7 @@ namespace bf {
                     if (!std::isfinite(stored_value)) {
                         throw std::runtime_error("Non-finite JSON number");
                     }
+#ifdef BITFROST_FLOAT_CHARCONV
                     char buffer[64];
                     auto conversion = std::to_chars(
                         buffer,
@@ -358,6 +394,12 @@ namespace bf {
                         std::numeric_limits<double>::max_digits10
                     );
                     return std::string(buffer, conversion.ptr);
+#else
+                    std::ostringstream output;
+                    output.imbue(std::locale::classic());
+                    output << std::setprecision(std::numeric_limits<double>::max_digits10) << stored_value;
+                    return output.str();
+#endif
                 } else if constexpr (std::is_same_v<T, std::string>) {
                     return quote(stored_value);
                 } else {

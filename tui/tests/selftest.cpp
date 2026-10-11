@@ -14,10 +14,13 @@
 #include "ui/sidebar.hpp"
 #include "ui/usage_chart.hpp"
 #include <algorithm>
+#include <clocale>
+#include <cmath>
 #include <ctime>
 #include <deque>
 #include <iostream>
 #include <limits>
+#include <locale>
 #include <numeric>
 #include <stdexcept>
 
@@ -48,6 +51,47 @@ namespace bf {
                 rejected = true;
             }
             check(rejected, "JSON accepts malformed input");
+        }
+
+        void json_numbers_selftest() {
+            struct CommaNumbers : std::numpunct<char> {
+                char do_decimal_point() const override {
+                    return ',';
+                }
+                char do_thousands_sep() const override {
+                    return '.';
+                }
+                std::string do_grouping() const override {
+                    return "\3";
+                }
+            };
+            struct RestoreLocale {
+                std::locale original;
+                std::string original_c = std::setlocale(LC_ALL, nullptr);
+                ~RestoreLocale() {
+                    std::locale::global(original);
+                    std::setlocale(LC_ALL, original_c.c_str());
+                }
+            } restore;
+            std::locale::global(std::locale(std::locale::classic(), new CommaNumbers));
+            check(Json(1234.5).dump() == "1234.5", "JSON decimals ignore the global locale");
+            check(Json::parse("1234.5").number() == 1234.5, "JSON parsing ignores the global locale");
+            check(Json::parse("1.25e+3").number() == 1250, "JSON exponent parsing");
+            check(std::signbit(Json::parse("-0.0").number()), "JSON parsing preserves negative zero");
+            for (double number :
+                 {1.2345678901234567,
+                  -1.2345678901234567,
+                  std::numeric_limits<double>::max(),
+                  std::numeric_limits<double>::lowest(),
+                  std::numeric_limits<double>::min(),
+                  std::numeric_limits<double>::denorm_min()}) {
+                check(
+                    Json::parse(Json(number).dump()).number() == number,
+                    "JSON doubles roundtrip without losing precision"
+                );
+            }
+            rejects("1e-999");
+            rejects("1,25");
         }
     }
 
@@ -116,6 +160,7 @@ namespace bf {
             check(parsed_json["low"].integer() == std::numeric_limits<int64_t>::min(), "JSON int64 min");
             check(parsed_json["unicode"].str() == "🚀", "JSON surrogate pair");
             check(Json::parse(parsed_json.dump()).dump() == parsed_json.dump(), "JSON roundtrip");
+            json_numbers_selftest();
             for (auto text :
                  {"",
                   "01",

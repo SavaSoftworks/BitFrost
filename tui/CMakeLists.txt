@@ -82,6 +82,29 @@ target_compile_features(bitfrost-tui PRIVATE cxx_std_20)
 target_compile_options(bitfrost-tui PRIVATE -Wall -Wextra -Wpedantic)
 target_compile_definitions(bitfrost-tui PRIVATE BITFROST_VERSION="${BITFROST_VERSION}")
 target_include_directories(bitfrost-tui PRIVATE src ${CMAKE_CURRENT_BINARY_DIR})
+# Floating-point charconv is newer than our macOS minimum. Probe at the shipped
+# deployment target, retaining the faster conversions on platforms that have them.
+include(CheckCXXSourceCompiles)
+include(CMakePushCheckState)
+cmake_push_check_state(RESET)
+set(CMAKE_REQUIRED_FLAGS "-std=c++20")
+if(APPLE)
+    string(APPEND CMAKE_REQUIRED_FLAGS " -mmacosx-version-min=12.3")
+endif()
+check_cxx_source_compiles("#include <charconv>
+#include <limits>
+int main() {
+    char buffer[64] = \"1.25\";
+    double value = 0;
+    auto parsed = std::from_chars(buffer, buffer + 4, value);
+    auto written = std::to_chars(buffer, buffer + sizeof(buffer), value,
+        std::chars_format::general, std::numeric_limits<double>::max_digits10);
+    return parsed.ec != std::errc() || written.ec != std::errc();
+}" BITFROST_FLOAT_CHARCONV)
+cmake_pop_check_state()
+if(BITFROST_FLOAT_CHARCONV)
+    target_compile_definitions(bitfrost-tui PRIVATE BITFROST_FLOAT_CHARCONV=1)
+endif()
 if(APPLE)
     target_compile_options(bitfrost-tui PRIVATE -mmacosx-version-min=12.3)
     target_link_options(bitfrost-tui PRIVATE -mmacosx-version-min=12.3)
