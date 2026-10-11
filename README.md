@@ -1,4 +1,4 @@
-<h1 align="center"><img src="assets/logo.svg" alt="BitFrost" width="640"></h1>
+<p align="center"><img src="assets/logo.svg" alt="BitFrost" width="640"></p>
 
 <h4 align="center">A bridge between agents</h4>
 
