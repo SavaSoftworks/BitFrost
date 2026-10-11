@@ -135,7 +135,7 @@ Use any mix of these.
 | Harness                                 | Models  | Turned on |
 |-----------------------------------------|---------|---|
 | Codex (CLI, or the ChatGPT desktop app) | GPT     | automatically, when installed and signed in |
-| ZCode                                   | GLM     | automatically, when installed and signed in, plus one setup step (Linux only for now, see Known Limitations) |
+| ZCode                                   | GLM     | automatically, when installed and signed in, plus one setup step |
 | opencode, Oh My Pi, Crush               | Various | only once you turn them on in the config screen or `~/.config/bitfrost/config.json` |
 | Gemini CLI                              | Gemini  | only once you turn it on, the same way |
 
@@ -188,7 +188,6 @@ Once Claude understands the assignment, ask it to save that as a rule in your CL
 - GLM needs a Z.ai individual coding plan. ZCode only offers Teams, Start plans, free usage, bigmodel and its other providers inside its desktop app, not to outside tools, so BitFrost can't use them.
 - Windows is not a supported platform. It may work via WSL, but it also may not.
 - Gemini CLI requires Gemini Code Assist Standard/Enterprise, Google Cloud access or a paid API key. [Google ended free and Google AI Pro/Ultra access in June 2026](https://github.com/google-gemini/gemini-cli/discussions/27274). Antigravity CLI (`agy`) isn't supported yet.
-- GLM via ZCode is only tested on Linux, with ZCode in `/opt/ZCode`. On macOS, BitFrost doesn't look for ZCode in its usual place yet.
 - ZCode's own auto mode doesn't work. When Claude Code is in auto mode, BitFrost reviews GLM's permission requests with a short Claude (Sonnet) check instead, which counts toward your Claude usage.
 - Oh My Pi may only ask permission for commands, deletes and moves, not ordinary file edits.
 - In opencode, denying a permission request ends that subagent's turn.

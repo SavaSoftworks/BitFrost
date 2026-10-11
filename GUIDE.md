@@ -6,13 +6,30 @@
 
 Install and sign in to the Codex CLI or the ChatGPT desktop app. Nothing else to do.
 
+BitFrost checks the standalone CLI, the desktop app's downloaded CLI releases,
+and its bundled CLI. On macOS, it looks for ChatGPT in `/Applications` and
+`~/Applications`, including the signed CLI inside `Contents/Resources/codex-cli`.
+
 ### ZCode (GLM)
 
-Sign in to ZCode's command-line tool once (change `/opt/ZCode` if ZCode is elsewhere):
+Sign in to ZCode's command-line tool once. On Linux (change `/opt/ZCode` if ZCode is elsewhere):
 
 ```
 ELECTRON_RUN_AS_NODE=1 ZCODE_BUILTIN_PROVIDER_CONFIG_FILE=/opt/ZCode/resources/config/provider/zcode-builtin.json /opt/ZCode/zcode /opt/ZCode/resources/glm/zcode.cjs login
 ```
+
+On macOS (change `/Applications/ZCode.app` if ZCode is elsewhere):
+
+```sh
+ELECTRON_RUN_AS_NODE=1 \
+  ZCODE_BUILTIN_PROVIDER_CONFIG_FILE="/Applications/ZCode.app/Contents/Resources/config/provider/zcode-builtin.json" \
+  "/Applications/ZCode.app/Contents/MacOS/ZCode" \
+  "/Applications/ZCode.app/Contents/Resources/glm/zcode.cjs" login
+```
+
+BitFrost finds ZCode in `/Applications`, `~/Applications`, or `/opt/ZCode`, and
+through a `zcode` executable on PATH. A custom `providers.zcode.dir` or
+`BITFROST_ZCODE_DIR` can name the Linux install directory or the macOS `.app` bundle.
 
 Then run `bitfrost setup zcode` once. Without it, GLM can't ask you for permission and is refused instead.
 

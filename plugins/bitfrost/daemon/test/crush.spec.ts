@@ -478,7 +478,7 @@ test('the hook denies when it cannot reach BitFrost', () => {
 })
 
 test('the factory finds the real binary behind the npm launcher', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bfcrush-bin-'))
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'bfcrush-bin-')))
   const pkg = path.join(dir, 'lib', 'node_modules', '@charmland', 'crush')
   fs.mkdirSync(path.join(pkg, 'bin'), { recursive: true })
   fs.writeFileSync(path.join(pkg, 'run-crush.js'), '')

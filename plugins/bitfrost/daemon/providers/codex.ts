@@ -630,9 +630,24 @@ function errorText(raw: string | undefined): string | undefined {
 }
 
 // Try the desktop app's newest downloaded Codex, then its bundled copy.
-const BUNDLED_CODEX = ['/usr/lib/chatgpt/resources/codex', '/Applications/ChatGPT.app/Contents/Resources/codex']
+export function bundledCodexPaths(applications = ['/Applications', path.join(os.homedir(), 'Applications')]): string[] {
+  return [
+    '/usr/lib/chatgpt/resources/codex-cli/bin/codex',
+    '/usr/lib/chatgpt/resources/codex-cli/codex',
+    '/usr/lib/chatgpt/resources/codex',
+    ...applications.flatMap((dir) => {
+      const resources = path.join(dir, 'ChatGPT.app', 'Contents', 'Resources')
+      return [
+        path.join(resources, 'codex-cli', 'CodexCLI.app', 'Contents', 'MacOS', 'codex'),
+        path.join(resources, 'codex-cli', 'bin', 'codex'),
+        path.join(resources, 'codex-cli', 'codex'),
+        path.join(resources, 'codex'),
+      ]
+    }),
+  ]
+}
 
-export function desktopCodex(codexHome = process.env.CODEX_HOME ?? path.join(os.homedir(), '.codex'), bundled = BUNDLED_CODEX): string | null {
+export function desktopCodex(codexHome = process.env.CODEX_HOME ?? path.join(os.homedir(), '.codex'), bundled = bundledCodexPaths()): string | null {
   const releases = path.join(codexHome, 'packages', 'app-server-daemon', 'releases')
   let names: string[] = []
   try {
@@ -646,6 +661,7 @@ export function desktopCodex(codexHome = process.env.CODEX_HOME ?? path.join(os.
   const downloaded = names.filter((n) => version(n).length === 3).sort(newestFirst).map((n) => path.join(releases, n, 'bin', 'codex'))
   for (const bin of [...downloaded, ...bundled]) {
     try {
+      if (!fs.statSync(bin).isFile()) continue
       fs.accessSync(bin, fs.constants.X_OK)
       return bin
     } catch {}

@@ -81,6 +81,10 @@ A setting is something BitFrost asks about before it turns on, like official han
 
 The version in `plugins/bitfrost/.claude-plugin/plugin.json` is the version of everything: plugin, helper and release. When a change reaches main with a version that has no release yet, CI tests it and makes release `v<version>` with `bitfrost-<version>.tar.gz`, its `.sha256`, and `release/install.sh`. A change that doesn't bump the version is tested but not released. To try a release locally, run `release/build.sh`, then `sh release/install.sh --from dist/bitfrost-<version>.tar.gz`.
 
+On macOS, building release archives also requires GNU tar (`brew install gnu-tar`).
+The build script finds Homebrew's `gtar` automatically; the TUI-only build does not
+need it. Checksums use `sha256sum` when available or macOS's `shasum` otherwise.
+
 ## License
 
 By contributing, you agree that your work is released under the GPL-3.0-only license, as in [LICENSE](LICENSE).

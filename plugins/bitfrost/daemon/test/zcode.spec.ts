@@ -414,7 +414,7 @@ test('each ZCode turn persists a process identity and only a matching owned proc
 })
 
 test('a process group is stopped only by the helper that started it, or after that helper is gone', async (t) => {
-  const { spawn } = await import('node:child_process')
+  const { spawn, execFileSync } = await import('node:child_process')
   const { killOwnedGroup, ownProcesses, processIdentity } = await import('../process.ts')
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bitfrost-owner-'))
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }))
@@ -427,7 +427,14 @@ test('a process group is stopped only by the helper that started it, or after th
     t.after(() => { try { process.kill(-child.pid!, 'SIGKILL') } catch {} })
     return new Promise<number>((r) => child.once('spawn', () => r(child.pid!)))
   }
-  const alive = (pid: number) => { try { process.kill(pid, 0); return !/^\d+ \(.*\) Z /.test(fs.readFileSync(`/proc/${pid}/stat`, 'utf8')) } catch { return false } }
+  const alive = (pid: number) => {
+    try {
+      process.kill(pid, 0)
+      return process.platform === 'linux'
+        ? !/^\d+ \(.*\) Z /.test(fs.readFileSync(`/proc/${pid}/stat`, 'utf8'))
+        : !/^\s*Z/.test(execFileSync('ps', ['-p', String(pid), '-o', 'stat='], { encoding: 'utf8' }))
+    } catch { return false }
+  }
   const pid = await group()
   const mine = processIdentity(pid, token)
   assert.equal(mine.owner!.pid, process.pid)

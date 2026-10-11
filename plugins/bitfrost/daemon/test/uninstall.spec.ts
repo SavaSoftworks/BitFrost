@@ -12,7 +12,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
 
-const home = fs.mkdtempSync(path.join(os.tmpdir(), 'bitfrost-uninstall-test-'))
+const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'bitfrost-uninstall-test-')))
 const fakeBin = path.join(home, 'fake-bin')
 const calls = path.join(home, 'claude-calls')
 Object.assign(process.env, {
@@ -195,7 +195,8 @@ test('history inside the app folder (the Linux default) survives removing the ap
   const script = `const { uninstall } = await import(${JSON.stringify(new URL('../uninstall.ts', import.meta.url).href)});
     process.exit(await uninstall({ stop: async () => null, running: async () => false }, { yes: true, keepHistory: true }))`
   const env: NodeJS.ProcessEnv = { ...process.env, HOME: root, XDG_DATA_HOME: path.join(root, 'data'), XDG_CONFIG_HOME: path.join(root, 'config'), XDG_CACHE_HOME: path.join(root, 'cache'), BITFROST_RUNTIME_DIR: path.join(root, 'run'), BITFROST_BIN_DIR: path.join(root, 'bin') }
-  delete env.BITFROST_DATA_DIR
+  // Exercise the Linux default layout on macOS too, where the default is elsewhere.
+  env.BITFROST_DATA_DIR = shared
   const r = spawnSync(process.execPath, ['--disable-warning=ExperimentalWarning', '--input-type=module', '-e', script], { env, encoding: 'utf8' })
   try {
     assert.strictEqual(r.status, 0, r.stderr)

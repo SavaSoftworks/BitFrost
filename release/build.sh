@@ -14,6 +14,21 @@ tui=1
 [ "${1:-}" != --no-tui ] || tui=
 
 cd "$(dirname "$0")/.."
+
+# Reproducible archives need GNU tar; Homebrew installs it as gtar.
+archive_tar=
+for candidate in gtar tar; do
+  if "$candidate" --version 2>/dev/null | grep -q 'GNU tar'; then
+    archive_tar=$candidate
+    break
+  fi
+done
+if [ -z "$archive_tar" ]; then
+  echo "build.sh: GNU tar is required (on macOS: brew install gnu-tar)" >&2
+  exit 1
+fi
+if command -v sha256sum >/dev/null 2>&1; then sum="sha256sum"; else sum="shasum -a 256"; fi
+
 version=$(node -p 'JSON.parse(require("fs").readFileSync("plugins/bitfrost/.claude-plugin/plugin.json", "utf8")).version')
 name=bitfrost-$version
 out=dist/$name
@@ -38,10 +53,10 @@ node -e '
 # Fixed order, owner and times make the build repeatable.
 mtime=$(git log -1 --format=%cI 2>/dev/null || echo 2026-01-01T00:00:00Z)
 # No pipe: sh would only see gzip's exit status.
-tar --sort=name --owner=0 --group=0 --numeric-owner --mtime="$mtime" \
+"$archive_tar" --sort=name --owner=0 --group=0 --numeric-owner --mtime="$mtime" \
   -C dist -cf "dist/$name.tar" "$name"
 gzip -n "dist/$name.tar"
-(cd dist && sha256sum "$name.tar.gz" >"$name.tar.gz.sha256")
+(cd dist && $sum "$name.tar.gz" >"$name.tar.gz.sha256")
 rm -rf "$out"
 
 sed "s/^RELEASE=\$/RELEASE=$version/" release/install.sh >dist/install.sh
@@ -58,7 +73,6 @@ if [ -n "$tui" ] && [ -n "$platform" ]; then
   if command -v cmake >/dev/null 2>&1; then
     asset=bitfrost-tui-$version-$platform
     release/build-tui.sh "dist/$asset" >&2
-    if command -v sha256sum >/dev/null 2>&1; then sum="sha256sum"; else sum="shasum -a 256"; fi
     (cd dist && $sum "$asset" >"$asset.sha256")
   else
     echo "build.sh: no cmake, so the config screen wasn't built" >&2
