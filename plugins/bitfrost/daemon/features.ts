@@ -89,18 +89,6 @@ export const FEATURES: Feature[] = [
     ],
     defaults: { effort: 'low' },
   },
-  // Temporary, inert settings for exercising the 0.9.1 -> 0.9.2 setup flow.
-  ...[
-    { id: 'previewAppearance', title: 'Preview appearance', prompt: 'Which appearance would you prefer?', options: ['Classic', 'Compact', 'Spacious'] },
-    { id: 'previewNotifications', title: 'Preview notifications', prompt: 'Which notifications would you prefer?', options: ['None', 'Important only', 'All activity'] },
-    { id: 'previewHistory', title: 'Preview history', prompt: 'How would you prefer to group history?', options: ['By day', 'By project', 'By model'] },
-    { id: 'previewStartup', title: 'Preview startup', prompt: 'Which page would you prefer on startup?', options: ['Home', 'Models', 'Sessions'] },
-  ].map((demo): Feature => ({
-    id: demo.id, key: demo.id, since: '0.9.2', title: demo.title,
-    questions: [{ key: 'choice', type: 'choice', prompt: demo.prompt, label: demo.title,
-      help: 'Test setting only. This choice does not change BitFrost behavior.',
-      default: demo.options[0], options: demo.options.map((value) => ({ value, label: value })) }],
-  })),
 ]
 
 export const shows = (when: When | undefined, answers: Answers) =>
