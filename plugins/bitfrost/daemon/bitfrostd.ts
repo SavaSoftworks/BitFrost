@@ -30,24 +30,32 @@
 // POST /sessions/:id/approvals/:approvalId: allow, allow_session or deny.
 // GET /sessions/:id/questions: pending agent questions.
 // POST /sessions/:id/questions/:questionId: answer or defer a question.
+// GET /providers: every app BitFrost knows, whether it's installed and on.
+// GET /providers/:id/models?refresh=1: every model an app lists, and whether each is offered.
+// GET /stats/models?provider=ID&model=M&since=S: one model's hourly usage rows changed after S.
+// GET /subagents?recent=N: subagents working now, then the newest others.
+// GET /subagents/page?before=T:ID|after=T:ID|oldest=1&limit=N: a page of subagents, newest first.
+// GET /subagents/changed?ids=A,B&since=S&top=T:ID: those changed after S, any that started working, and newer than top.
+// POST /viewers/:id: keep the helper up for a config screen; DELETE /viewers/:id lets it go.
 // POST /providers/:id/bridge: app hook call with x-bitfrost-token.
 // POST /zcode/hook: ZCode bridge call.
 import http from 'node:http'
 import fs from 'node:fs'
 import path from 'node:path'
 import { randomUUID } from 'node:crypto'
-import { spawn } from 'node:child_process'
+import { call, get, health, start } from './client.ts'
 import { Store } from './store.ts'
-import { killOwnedGroups } from './process.ts'
+import { killOwnedGroups, ownProcesses } from './process.ts'
 import { Session } from './session.ts'
-import { buildAgents, describe, nameTable, selectModels, type AgentDef, type HarnessModel } from './registry.ts'
-import { CACHE, CONFIG, DATA_DIR, DATA_LOCK, LOCK, LOG, RUN_DIR, SOCKET, VERSION, canonical, configKey, loadConfig, log, providerEnv, takeLock, type Config } from './config.ts'
+import { buildAgents, describe, nameTable, selectModels, whyNot, type AgentDef, type HarnessModel } from './registry.ts'
+import { CACHE, CONFIG, DATA_DIR, DATA_LOCK, LOCK, LOG, RUN_DIR, SOCKET, VERSION, canonical, configKey, loadConfig, log, loginShellLookup, pathLookup, providerEnv, takeLock, type Config } from './config.ts'
 import { LEASE_TTL_MS, SessionTable } from './leases.ts'
 import type { Provider, ProviderFactory } from './provider.ts'
 import { PROVIDERS } from './providers/index.ts'
 import { selftest, selftestAll } from './selftest.ts'
 import { update } from './update.ts'
 import { uninstall } from './uninstall.ts'
+import { migrateDatabase } from './migrate.ts'
 import { FEATURES, findFeature } from './features.ts'
 import { setupFeatures } from './settings.ts'
 
@@ -58,6 +66,12 @@ const REGISTRY_TTL_MS = 10 * 60_000
 const ABANDONED_MS = 90_000
 const DISCOVER_WAIT_MS = 15_000
 const MAX_BODY_BYTES = 16 * 1024 * 1024
+const VIEWER_TTL_MS = 60_000 // A config screen keeps the helper up while it renews within this.
+const DETECT_TTL_MS = 60_000
+// How long a models request waits for a fast listing before answering pending.
+const MODELS_WAIT_MS = 1500
+const RECENT_SUBAGENTS = 10
+const STARTED_AT = Date.now()
 
 class HttpError extends Error {
   status: number
@@ -81,42 +95,16 @@ function appStamp(p: Provider): string {
     .join('|')
 }
 
-function call(method: string, urlPath: string, timeout = 1000): Promise<{ status: number; body: any } | null> {
-  return new Promise((resolve) => {
-    // Avoid pooled connections to a helper that may have exited.
-    const req = http.request({ socketPath: SOCKET, path: urlPath, method, timeout, agent: false }, (res) => {
-      let data = ''
-      res.setEncoding('utf8')
-      res.on('data', (c) => (data += c))
-      res.on('end', () => {
-        let body: any = null
-        try {
-          body = JSON.parse(data)
-        } catch {}
-        resolve({ status: res.statusCode ?? 0, body })
-      })
-    })
-    req.on('error', () => resolve(null))
-    req.on('timeout', () => (req.destroy(), resolve(null)))
-    req.end()
-  })
+// Allow and deny lists by app, from providers.<id>.models and providers.<id>.disabled.
+function lists(config: Config) {
+  const pick = (key: string) => new Map(Object.entries(config.providers).filter(([, c]) => Array.isArray(c?.[key])).map(([id, c]) => [id, (c[key] as unknown[]).map(String)]))
+  return { allow: pick('models'), deny: pick('disabled') }
 }
-const get = async (urlPath: string, timeout = 1000) => {
-  const r = await call('GET', urlPath, timeout)
-  return r?.status === 200 ? r.body : null
-}
-const health = () => get('/health')
+
+const or = (names: string[]) => (names.length < 2 ? names.join('') : `${names.slice(0, -1).join(', ')} or ${names.at(-1)}`)
 
 async function ensure() {
-  if (await health()) return
-  fs.mkdirSync(RUN_DIR, { recursive: true, mode: 0o700 })
-  const out = fs.openSync(LOG, 'a')
-  const child = spawn(process.execPath, [...process.execArgv, process.argv[1], 'serve'], { detached: true, stdio: ['ignore', out, out] })
-  child.unref()
-  for (let i = 0; i < 50; i++) {
-    await new Promise((r) => setTimeout(r, 100))
-    if (await health()) return
-  }
+  if (await start()) return
   console.error(`bitfrostd did not come up; see ${LOG}`)
   process.exit(1)
 }
@@ -158,6 +146,7 @@ function serve() {
   }
 
   const store = new Store(path.join(DATA_DIR, 'bitfrost.db'), log, true)
+  ownProcesses(path.join(DATA_DIR, 'bitfrost.db'))
   // Only a database error turns persistence off; other bugs are logged and the helper carries on.
   const lastResort = (kind: string, error: unknown) => {
     try { log(`${kind}: ${error instanceof Error ? error.stack ?? error.message : String(error)}`) } catch {}
@@ -167,6 +156,7 @@ function serve() {
   process.on('unhandledRejection', (error) => lastResort('unhandled rejection', error))
   const providers = new Map<string, Provider>()
   const providerConfigs = new Map<string, string>()
+  const providerModels = new Map<string, string>()
   const providerStamps = new Map<string, string>()
   const providerFor = (s: Session) => providers.get(s.info.harness)
   const table = new SessionTable(providerFor, log)
@@ -210,43 +200,101 @@ function serve() {
   const busy = (id: string) => table.running().some((s) => s.info.harness === id)
   const updated = (p: Provider) => providerStamps.get(p.id) !== appStamp(p) || !!p.moved?.()
 
-  // Apply provider changes once their running tasks finish.
-  let deferred = false
-  const syncProviders = () => {
-    const config = readConfig()
-    deferred = false
-    for (const f of PROVIDERS) {
-      const entry = config.providers[f.id] ?? {}
-      const enabled = entry.enabled ?? !f.optIn
-      const current = providers.get(f.id)
-      const reconfigured = current && providerConfigs.get(f.id) !== JSON.stringify(entry)
-      if (current && (!enabled || reconfigured || updated(current))) {
-        if (busy(f.id)) deferred = true
-        else {
-          current.dispose?.()
-          for (const session of table.sessions.values()) if (session.info.harness === f.id) { session.info.state = 'detached'; session.save() }
-          providers.delete(f.id)
-          log(`provider ${f.id}: ${!enabled ? 'turned off' : reconfigured ? 'config changed; restarting it' : 'its app changed on disk; restarting it'}`)
+  // Where each app is, found without starting it. PATH is checked first; the login
+  // shell is asked without blocking, since running subagents share this loop.
+  const detected = new Map<string, { at: number; key: string; location: string | null; binaries: Map<string, string | null> }>()
+  const detecting = new Map<string, { key: string; job: Promise<string | null> }>()
+  const detect = (f: ProviderFactory, config: Config, restarting = false): Promise<string | null> => {
+    const running = providers.get(f.id)
+    if (running && !restarting) return Promise.resolve(running.location)
+    const key = JSON.stringify(config.providers[f.id] ?? {})
+    const hit = detected.get(f.id)
+    if (hit?.key === key && Date.now() - hit.at < DETECT_TTL_MS) return Promise.resolve(hit.location)
+    const pending = detecting.get(f.id)
+    if (pending?.key === key) return pending.job
+    const job = (async () => {
+      const asked = new Map<string, string | null>()
+      const attempt = () => {
+        const missed: string[] = []
+        const resolveBinary = (name: string) => {
+          if (asked.has(name)) return asked.get(name)!
+          const found = pathLookup(name)
+          if (!found) missed.push(name)
+          else asked.set(name, found)
+          return found
+        }
+        try { return { location: f.detect?.({ ...providerEnv(config, f.id), resolveBinary }) ?? null, missed } } catch (e) {
+          log(`provider ${f.id}: ${(e as Error).message}`)
+          return { location: null, missed: [] }
         }
       }
-      if (!enabled || providers.has(f.id)) continue
-      try {
-        const p = f.create(providerEnv(config, f.id))
-        if (!p) continue
-        providers.set(p.id, p)
-        providerConfigs.set(p.id, JSON.stringify(entry))
-        providerStamps.set(p.id, appStamp(p))
-        log(`provider ${p.id}: ${p.location}`)
-      } catch (e) {
-        log(`provider ${f.id}: ${(e as Error).message}`)
+      let { location, missed } = attempt()
+      if (!location && missed.length) {
+        for (const name of missed) asked.set(name, await loginShellLookup(name))
+        location = attempt().location
       }
-    }
-    return config
+      detected.set(f.id, { at: Date.now(), key, location, binaries: asked })
+      return location
+    })().finally(() => { if (detecting.get(f.id)?.job === job) detecting.delete(f.id) })
+    detecting.set(f.id, { key, job })
+    return job
   }
-  syncProviders()
+  // Apply provider changes once their running tasks finish.
+  let deferred = false
+  let syncing: Promise<Config> | null = null
+  const syncProviders = () => syncing ??= (async () => {
+    for (;;) {
+      const config = readConfig()
+      await Promise.all(PROVIDERS.filter((f) => {
+        const { models, disabled, ...entry } = config.providers[f.id] ?? {}
+        const current = providers.get(f.id)
+        return (entry.enabled ?? !f.optIn) && (!current || providerConfigs.get(f.id) !== JSON.stringify(entry) || updated(current))
+      }).map((f) => detect(f, config, true)))
+      if (configKey(config) !== configKey(readConfig())) continue
+      deferred = false
+      for (const f of PROVIDERS) {
+        const entry = config.providers[f.id] ?? {}
+        const enabled = entry.enabled ?? !f.optIn
+        const current = providers.get(f.id)
+        // Model lists apply without restarting the app.
+        const { models, disabled, ...rest } = entry
+        const reconfigured = current && providerConfigs.get(f.id) !== JSON.stringify(rest)
+        if (current && !reconfigured && providerModels.get(f.id) !== JSON.stringify(models ?? null)) {
+          current.setModels?.(Array.isArray(models) ? models.map(String) : null)
+          providerModels.set(f.id, JSON.stringify(models ?? null))
+        }
+        if (current && (!enabled || reconfigured || updated(current))) {
+          if (busy(f.id)) deferred = true
+          else {
+            current.dispose?.()
+            for (const session of table.sessions.values()) if (session.info.harness === f.id) { session.info.state = 'detached'; session.save() }
+            providers.delete(f.id)
+            log(`provider ${f.id}: ${!enabled ? 'turned off' : reconfigured ? 'config changed; restarting it' : 'its app changed on disk; restarting it'}`)
+          }
+        }
+        if (!enabled || providers.has(f.id)) continue
+        try {
+          const p = f.create({ ...providerEnv(config, f.id), resolveBinary: (name) => detected.get(f.id)?.binaries.get(name) ?? pathLookup(name) })
+          if (!p) continue
+          providers.set(p.id, p)
+          providerConfigs.set(p.id, JSON.stringify(rest))
+          providerModels.set(p.id, JSON.stringify(models ?? null))
+          providerStamps.set(p.id, appStamp(p))
+          log(`provider ${p.id}: ${p.location}`)
+        } catch (e) {
+          log(`provider ${f.id}: ${(e as Error).message}`)
+        }
+      }
+      return config
+    }
+  })().finally(() => { syncing = null })
+  void syncProviders().catch((e) => log(`provider sync: ${e.message}`))
   let noLeasesSince: number | null = Date.now()
+  const viewers = new Map<string, number>()
   const leasesChanged = () => {
-    if (table.leases.size) noLeasesSince = null
+    const now = Date.now()
+    for (const [id, until] of viewers) if (until < now) viewers.delete(id)
+    if (table.leases.size || viewers.size) noLeasesSince = null
     else noLeasesSince ??= Date.now()
   }
 
@@ -258,23 +306,30 @@ function serve() {
   let discovering: Promise<void> | null = null
   // Cache each app's models so slow listings do not block the others.
   const lastModels = new Map<string, HarnessModel[]>()
+  const lastModelsAt = new Map<string, number>()
+  const lastErrors = new Map<string, string>()
   const listing = new Map<string, Promise<void>>()
-  const listProvider = (p: Provider) => {
+  const listProvider = (p: Provider, force = false) => {
     const inFlight = listing.get(p.id)
     if (inFlight) return inFlight
     const job = p
-      .listModels()
+      .listModels(force)
       .then((models) => {
         lastModels.set(p.id, models.map((m) => ({ ...m, harness: p.id, harnessName: p.displayName })))
+        lastModelsAt.set(p.id, Date.now())
+        lastErrors.delete(p.id)
       })
-      .catch((e) => log(`discovery: ${p.id} failed: ${(e as Error).message}`))
+      .catch((e) => {
+        log(`discovery: ${p.id} failed: ${(e as Error).message}`)
+        lastErrors.set(p.id, (e as Error).message)
+      })
       .finally(() => listing.delete(p.id))
     listing.set(p.id, job)
     return job
   }
   const discover = () =>
     (discovering ??= (async () => {
-      const config = syncProviders()
+      const config = await syncProviders()
       const late = [...providers.values()].map((p) => {
         const job = listProvider(p)
         return Promise.race([job.then(() => false), new Promise<boolean>((r) => setTimeout(() => r(true), DISCOVER_WAIT_MS))]).then((slow) => {
@@ -285,7 +340,7 @@ function serve() {
       await Promise.all(late)
       const found = [...providers.values()].flatMap((p) => lastModels.get(p.id) ?? [])
       const ownVendors = new Map([...providers.values()].filter((p) => p.vendor).map((p) => [p.id, p.vendor!]))
-      const allow = new Map(Object.entries(config.providers).filter(([, c]) => Array.isArray(c?.models)).map(([id, c]) => [id, c.models as string[]]))
+      const { allow, deny } = lists(config)
       const unlisted: string[] = []
       for (const p of providers.values()) {
         if (p.vendor || allow.has(p.id)) continue
@@ -293,11 +348,11 @@ function serve() {
         log(`discovery: ${p.id} offers ${n} models from many companies; none are used until config.json lists the wanted ones in providers.${p.id}.models`)
         unlisted.push(`${p.displayName} offers ${n} models; list the ones you want in providers.${p.id}.models.`)
       }
-      const agents = buildAgents(selectModels(found, ownVendors, allow))
+      const agents = buildAgents(selectModels(found, ownVendors, allow, deny), ownVendors)
       const hint = agents.length
         ? undefined
         : !providers.size
-          ? `No app found: install and sign in to Codex or ZCode, or turn on opencode, Oh My Pi or Gemini CLI in ${CONFIG}.`
+          ? `No app found: install and sign in to Codex or ZCode, or turn on ${or(PROVIDERS.filter((f) => f.optIn).map((f) => f.displayName))} in ${CONFIG}.`
           : unlisted.length
             ? `${unlisted.join(' ')} (in ${CONFIG})`
             : `None of the models from ${[...providers.values()].map((p) => p.displayName).join(', ')} can be offered; check providers.<app>.models in ${CONFIG} and the log at ${LOG}.`
@@ -307,6 +362,44 @@ function serve() {
       fs.writeFileSync(CACHE, JSON.stringify(registry))
       log(`discovery: ${registry.agents.map((a) => a.name).join(', ')}`)
     })().finally(() => (discovering = null)))
+  const ownVendorsNow = () => new Map([...providers.values()].filter((p) => p.vendor).map((p) => [p.id, p.vendor!]))
+
+  const providerList = async () => {
+    const config = await syncProviders()
+    const locations = await Promise.all(PROVIDERS.map((f) => detect(f, config)))
+    return PROVIDERS.map((f, i) => ({ id: f.id, displayName: f.displayName, detected: !!locations[i], location: locations[i],
+      enabled: config.providers[f.id]?.enabled ?? !f.optIn, optIn: !!f.optIn, running: providers.has(f.id), mode: f.vendor ? 'deny' : 'allow' }))
+  }
+
+  // Every model an app lists, with whether it's offered and why not.
+  const modelsOf = async (id: string, refresh: boolean) => {
+    const f = PROVIDERS.find((x) => x.id === id)
+    if (!f) throw new HttpError(404, `unknown provider ${id}`)
+    const config = await syncProviders()
+    const p = providers.get(id)
+    if (!p) {
+      const location = await detect(f, config)
+      const why = !location ? `${f.displayName} isn't installed on this machine` : `Turn on ${f.displayName} to see its models`
+      return { provider: id, at: 0, pending: false, error: why, models: [] }
+    }
+    if (refresh) listProvider(p, true)
+    // Discovery lists every app once and rebuilds the subagent list too.
+    if (refresh || !lastModels.has(id) || registryStale()) void discover().catch((e) => log(`discovery: ${(e as Error).message}`))
+    // A discovery already under way may have started before this app was on.
+    const job = listing.get(id) ?? (lastModels.has(id) ? null : listProvider(p))
+    if (job) await Promise.race([job, new Promise((r) => setTimeout(r, MODELS_WAIT_MS))])
+    const { allow, deny } = lists(config)
+    const ownVendors = ownVendorsNow()
+    const agents = registry?.agents ?? []
+    const models = (lastModels.get(id) ?? []).map((m) => {
+      const reason = whyNot(m, ownVendors, allow, deny)
+      const blocked = reason === 'disabled' || reason === 'not_listed'
+      return { model: m.model, displayName: m.displayName, company: m.provider, description: m.description, efforts: m.efforts, defaultEffort: m.defaultEffort,
+        isDefault: m.isDefault, enabled: !blocked, offered: reason === null, reason, agent: agents.find((a) => a.harness === id && a.model === m.model)?.name ?? null }
+    })
+    return { provider: id, at: lastModelsAt.get(id) ?? 0, pending: listing.has(id), error: lastErrors.get(id) ?? null, models }
+  }
+
   const registryStale = () => !registry || Date.now() - registry.at > REGISTRY_TTL_MS || registry.configKey !== configKey(readConfig())
 
 
@@ -345,6 +438,7 @@ function serve() {
     return {
       version: VERSION,
       pid: process.pid,
+      startedAt: STARTED_AT,
       socket: SOCKET,
       config: CONFIG,
       configError: config.error,
@@ -418,6 +512,76 @@ function serve() {
         if (stale) await Promise.race([discover(), new Promise((r) => setTimeout(r, registry ? 8000 : 30_000))])
         const agents = registry?.agents ?? []
         return json(res, 200, { agents: agents.map((a) => ({ ...a, description: describe(a, agents) })), nameTable: nameTable(agents), at: registry?.at ?? 0, hint: registry?.hint ?? null })
+      }
+
+      if (parts[0] === 'viewers' && parts[1] && !parts[2]) {
+        if (req.method === 'POST') viewers.set(parts[1], Date.now() + VIEWER_TTL_MS)
+        else if (req.method === 'DELETE') viewers.delete(parts[1])
+        else return json(res, 404, { error: 'not found' })
+        leasesChanged()
+        return json(res, 200, { ok: true, ttlMs: VIEWER_TTL_MS })
+      }
+      if (req.method === 'GET' && url.pathname === '/providers') return json(res, 200, { providers: await providerList() })
+      if (req.method === 'GET' && parts[0] === 'providers' && parts[1] && parts[2] === 'models' && !parts[3]) {
+        return json(res, 200, await modelsOf(decodeURIComponent(parts[1]), url.searchParams.get('refresh') === '1'))
+      }
+      if (req.method === 'GET' && parts[0] === 'subagents') {
+        // Running means working on a turn now, as the helper knows it; the store has the rest.
+        const working = table.summaries().filter((x) => ['running', 'stopping'].includes(x.state) && table.sessions.get(x.id)?.info.closedAt == null)
+        const workingIds = new Set(working.map((x) => x.id))
+        const name = (h: string) => PROVIDERS.find((f) => f.id === h)?.displayName ?? h
+        const shape = (r: ReturnType<typeof store.subagentsById>[number]) => ({ ...r, harnessName: name(r.harness), state: working.find((x) => x.id === r.id)?.state ?? r.state, running: workingIds.has(r.id) })
+        // A working session the store can't give back (persistence off) still shows, from memory.
+        const runningRows = () => {
+          const stored = store.subagentsById([...workingIds])
+          const missing = [...workingIds].filter((id) => !stored.some((r) => r.id === id)).map((id) => {
+            const i = table.sessions.get(id)!.info
+            return { id, harness: i.harness, agent: i.agent, model: i.model, effort: i.effort ?? null, title: i.title ?? null, state: i.state, createdAt: i.createdAt ?? Date.now(),
+              closedAt: null, closeReason: null, changedAt: i.updatedAt ?? 0, tokens: 0, cachedTokens: 0, turns: 0, toolCalls: 0, activeMs: 0, turnStartedAt: null }
+          })
+          return [...stored, ...missing].map(shape)
+        }
+        const cursor = (key: string): [number, string] | undefined => {
+          const raw = url.searchParams.get(key)
+          if (!raw) return undefined
+          const at = raw.indexOf(':')
+          const time = Number(raw.slice(0, at))
+          if (at < 1 || !Number.isFinite(time)) throw new HttpError(400, `${key} must be <createdAt>:<id>`)
+          return [time, raw.slice(at + 1)]
+        }
+        const limit = (fallback: number) => Math.max(1, Math.min(500, Math.floor(Number(url.searchParams.get('limit') ?? fallback)) || fallback))
+        if (!parts[1]) {
+          const recent = Math.max(1, Math.min(50, Math.floor(Number(url.searchParams.get('recent') ?? RECENT_SUBAGENTS)) || RECENT_SUBAGENTS))
+          const page = store.subagentPage({ limit: recent + workingIds.size })
+          return json(res, 200, { now: Date.now(), running: runningRows(), recent: page.rows.filter((r) => !workingIds.has(r.id)).slice(0, recent).map(shape) })
+        }
+        if (parts[1] === 'page') {
+          const page = store.subagentPage({ before: cursor('before'), after: cursor('after'), oldest: url.searchParams.get('oldest') === '1', limit: limit(50), count: true })
+          return json(res, 200, { now: Date.now(), rows: page.rows.map(shape), more: page.more, total: page.total })
+        }
+        if (parts[1] === 'changed') {
+          // Only what the screen shows: the given sessions changed since the last look, any session
+          // that started working, and with top, sessions newer than the top row.
+          const ids = (url.searchParams.get('ids') ?? '').split(',').filter(Boolean).slice(0, 500)
+          const since = Number(url.searchParams.get('since') ?? 0) || 0
+          const changed = store.subagentsChanged(ids, since)
+          const shown = new Set(ids)
+          const started = runningRows().filter((r) => !shown.has(r.id) && (r.changedAt ?? 0) > since)
+          const top = cursor('top')
+          const newer = top ? store.subagentPage({ after: top, limit: limit(50) }).rows.map(shape) : []
+          const recent = url.searchParams.has('recent')
+            ? store.subagentPage({ limit: RECENT_SUBAGENTS + workingIds.size }).rows.filter((r) => !workingIds.has(r.id)).slice(0, RECENT_SUBAGENTS).map(shape)
+            : undefined
+          return json(res, 200, { now: Date.now(), stamp: changed.stamp, rows: [...changed.rows.map(shape), ...started], newer, recent })
+        }
+        return json(res, 404, { error: 'not found' })
+      }
+      if (req.method === 'GET' && url.pathname === '/stats/models') {
+        const id = url.searchParams.get('provider') ?? ''
+        const model = url.searchParams.get('model') ?? ''
+        if (!PROVIDERS.some((f) => f.id === id)) return json(res, 404, { error: `unknown provider ${id}` })
+        if (!model) return json(res, 400, { error: 'model is needed' })
+        return json(res, 200, store.usageRows(id, model, Number(url.searchParams.get('since') ?? 0) || 0))
       }
 
       if (req.method === 'GET' && url.pathname === '/sessions') return json(res, 200, { sessions: table.summaries() })
@@ -659,9 +823,12 @@ usage: bitfrost <command>
 
   status                    what the helper is doing: apps, models, subagents
   restart                   restart the helper, once no subagent is running
+  migrate                   stop an idle helper and migrate the database now
   update                    install the latest release, if it's newer
   uninstall [--yes]         remove BitFrost from Claude Code, ZCode and this machine
     [--keep-config]         with --yes, keep your config
+    [--keep-history]        with --yes, keep subagent history and usage stats
+  config                    open the config screen (also a bare bitfrost on a terminal)
   setup                     choose settings you haven't chosen yet
   setup <setting>           choose a setting again (${FEATURES.map((f) => f.id).join(', ')})
   setup <app>               one-time setup for an app (${PROVIDERS.filter((p) => p.setup).map((p) => p.id).join(', ')})
@@ -673,8 +840,16 @@ usage: bitfrost <command>
 
 Guide: https://github.com/${process.env.BITFROST_REPO || 'SavaSoftworks/BitFrost'}/blob/main/GUIDE.md`
 
+const noScreen = () => `The config screen isn't available for ${process.platform}-${process.arch} here; edit ${CONFIG} instead.`
+
 const mode = process.argv[2]
-if (mode === undefined || mode === 'help' || mode === '--help' || mode === '-h') console.log(HELP)
+if (mode === undefined && process.stdout.isTTY && process.stdin.isTTY) console.log(`${HELP}\n\n${noScreen()}`)
+else if (mode === undefined || mode === 'help' || mode === '--help' || mode === '-h') console.log(HELP)
+else if (mode === 'config') {
+  console.error(noScreen())
+  process.exit(1)
+}
+else if (mode === 'tui-rpc') await (await import('./tui-rpc.ts')).serveRpc()
 else if (mode === 'version' || mode === '--version' || mode === '-v') console.log(VERSION)
 else if (mode === 'setup') await setup(process.argv[3])
 else if (mode === 'zcode-setup') await setup('zcode')
@@ -683,10 +858,14 @@ else if (mode === 'serve') serve()
 else if (mode === 'socket') console.log(SOCKET)
 else if (mode === 'status') await printStatus()
 else if (mode === 'restart') await restart()
+else if (mode === 'migrate') {
+  try { await migrateDatabase(stop, process.argv.includes('--install-lock')) }
+  catch (error) { console.error((error as Error).message); process.exitCode = 1 }
+}
 else if (mode === 'update') process.exit(await update())
 else if (mode === 'uninstall') {
   const flags = process.argv.slice(3)
-  process.exit(await uninstall({ stop, running: async () => !!(await health()) }, { yes: flags.includes('--yes') || flags.includes('-y'), keepConfig: flags.includes('--keep-config') }))
+  process.exit(await uninstall({ stop, running: async () => !!(await health()) }, { yes: flags.includes('--yes') || flags.includes('-y'), keepConfig: flags.includes('--keep-config'), keepHistory: flags.includes('--keep-history') }))
 }
 else if (mode === 'selftest' && process.argv[3] === '--all') await selftestAll()
 else if (mode === 'selftest') await selftest(process.argv[3], process.argv[4])

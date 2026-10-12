@@ -123,6 +123,11 @@ export class AcpProvider implements Provider {
     this.allow = opts.models?.length ? opts.models : null
   }
 
+  // The next listing reads thought levels for newly listed models.
+  setModels(models: string[] | null) {
+    this.allow = models?.length ? models : null
+  }
+
 
   private start(): Promise<void> {
     if (this.ready) return this.ready
@@ -246,13 +251,13 @@ export class AcpProvider implements Provider {
   }
 
 
-  async listModels(): Promise<HarnessModel[]> {
+  async listModels(force = false): Promise<HarnessModel[]> {
     this.discovering++
-    try { return await this.discoverModels() } finally { this.discovering-- }
+    try { return await this.discoverModels(force) } finally { this.discovering-- }
   }
 
-  private async discoverModels(): Promise<HarnessModel[]> {
-    const fresh = (c: typeof this.models) => c && Date.now() - c.at < MODELS_TTL_MS && JSON.stringify(c.allow) === JSON.stringify(this.allow)
+  private async discoverModels(force = false): Promise<HarnessModel[]> {
+    const fresh = (c: typeof this.models) => !force && c && Date.now() - c.at < MODELS_TTL_MS && JSON.stringify(c.allow) === JSON.stringify(this.allow)
     if (!fresh(this.models) && this.cacheFile) {
       try {
         this.models = JSON.parse(fs.readFileSync(this.cacheFile, 'utf8'))
@@ -495,9 +500,10 @@ export class AcpProvider implements Provider {
   private endTurn(st: State, turn: Turn, r: Json, error: string | null) {
     if (st.turn !== turn) return
     this.flush(st, turn)
-    // Input counts are totals, so pair output with the last context size.
+    // Keep context limits on the last snapshot, and bill the prompt-wide totals once.
     const out = r.usage?.outputTokens
-    if (typeof out === 'number' && out > 0 && turn.lastUsed !== null) st.session.push({ type: 'usage', inputTokens: turn.lastUsed, outputTokens: out, cachedInputTokens: 0 })
+    if (turn.lastUsed !== null) st.session.push({ type: 'usage', requestId: turn.id, inputTokens: turn.lastUsed, outputTokens: Number(out) || 0, cachedInputTokens: 0,
+      billing: { inputTokens: r.usage?.inputTokens ?? turn.lastUsed, outputTokens: Number(out) || 0, cachedInputTokens: Number(r.usage?.cachedInputTokens) || 0, requests: Number(r.usage?.modelRequestCount) || 1 } })
     const stop = r.stopReason
     const status =
       turn.wrongModel || (error && !turn.cancelled) ? 'failed'
@@ -535,7 +541,8 @@ export class AcpProvider implements Provider {
         return void st.session.push({ type: 'plan', entries: (u.entries ?? []).map((e: Json) => ({ content: String(e.content ?? ''), status: String(e.status ?? 'pending') })) })
       case 'usage_update':
         turn.lastUsed = Number(u.used) || 0
-        return void st.session.push({ type: 'usage', inputTokens: turn.lastUsed, outputTokens: 0, cachedInputTokens: 0 })
+        return void st.session.push({ type: 'usage', requestId: turn.id, inputTokens: turn.lastUsed, outputTokens: 0, cachedInputTokens: 0,
+          billing: { inputTokens: 0, outputTokens: 0, cachedInputTokens: 0, requests: 0 } })
     }
   }
 

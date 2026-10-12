@@ -6,20 +6,57 @@
 # Public License, version 3 only. It comes with no warranty. See LICENSE.
 
 # Builds dist/bitfrost-<version>.tar.gz, its .sha256, and dist/install.sh
-# stamped to install that version.
+# stamped to install that version. Also builds this machine's config screen
+# next to them, so install.sh --from picks it up; --no-tui skips that.
 set -eu
 
+tui=1
+migrator=1
+for arg in "$@"; do
+  case $arg in
+    --no-tui) tui= ;;
+    --no-migrator) migrator= ;;
+    *) echo "build.sh: unknown option: $arg" >&2; exit 1 ;;
+  esac
+done
+
 cd "$(dirname "$0")/.."
+
+# Reproducible archives need GNU tar; Homebrew installs it as gtar.
+archive_tar=
+for candidate in gtar tar; do
+  if "$candidate" --version 2>/dev/null | grep -q 'GNU tar'; then
+    archive_tar=$candidate
+    break
+  fi
+done
+if [ -z "$archive_tar" ]; then
+  echo "build.sh: GNU tar is required (on macOS: brew install gnu-tar)" >&2
+  exit 1
+fi
+if command -v sha256sum >/dev/null 2>&1; then sum="sha256sum"; else sum="shasum -a 256"; fi
+
 version=$(node -p 'JSON.parse(require("fs").readFileSync("plugins/bitfrost/.claude-plugin/plugin.json", "utf8")).version')
 name=bitfrost-$version
 out=dist/$name
 
 rm -rf "$out" "dist/$name.tar.gz" "dist/$name.tar.gz.sha256" dist/install.sh
 mkdir -p "$out/.claude-plugin" "$out/plugins"
-cp LICENSE README.md "$out/"
-cp -R plugins/bitfrost "$out/plugins/"
+cp LICENSE README.md package.json "$out/"
+tar -C plugins --exclude=bitfrost/migrations/build --exclude=bitfrost/migrations/bin \
+  -cf "$out/plugin.tar" bitfrost
+tar -xf "$out/plugin.tar" -C "$out/plugins"
+rm "$out/plugin.tar"
+# Claude Code caches only the plugin folder, so carry the canonical metadata
+# into that folder as a build artifact as well.
+cp package.json "$out/plugins/bitfrost/package.json"
+mkdir -p "$out/release"
+cp release/build-migrations.sh release/build-cpu.sh \
+  release/generate-migrations.mjs "$out/release/"
 rm -rf "$out/plugins/bitfrost/daemon/test" \
   "$out/plugins/bitfrost/hooks/register.test.ts" \
+  "$out/plugins/bitfrost/migrations/build" \
+  "$out/plugins/bitfrost/migrations/test" \
   "$out/plugins/bitfrost/.claude-plugin/types" \
   "$out/plugins/bitfrost/tsconfig.json"
 
@@ -34,12 +71,35 @@ node -e '
 # Fixed order, owner and times make the build repeatable.
 mtime=$(git log -1 --format=%cI 2>/dev/null || echo 2026-01-01T00:00:00Z)
 # No pipe: sh would only see gzip's exit status.
-tar --sort=name --owner=0 --group=0 --numeric-owner --mtime="$mtime" \
+"$archive_tar" --sort=name --owner=0 --group=0 --numeric-owner --mtime="$mtime" \
   -C dist -cf "dist/$name.tar" "$name"
 gzip -n "dist/$name.tar"
-(cd dist && sha256sum "$name.tar.gz" >"$name.tar.gz.sha256")
+(cd dist && $sum "$name.tar.gz" >"$name.tar.gz.sha256")
 rm -rf "$out"
 
 sed "s/^RELEASE=\$/RELEASE=$version/" release/install.sh >dist/install.sh
 grep -qx "RELEASE=$version" dist/install.sh || { echo "build.sh: couldn't stamp install.sh" >&2; exit 1; }
+
+# Named the way install.sh looks for it. CI builds the shipped ones itself.
+case "$(uname -s) $(uname -m)" in
+  "Linux x86_64") platform=linux-x64 ;;
+  "Linux aarch64") platform=linux-arm64 ;;
+  Darwin\ *) platform=darwin-universal ;;
+  *) platform= ;;
+esac
+if [ -n "$tui" ] && [ -n "$platform" ]; then
+  if command -v cmake >/dev/null 2>&1; then
+    asset=bitfrost-tui-$version-$platform
+    release/build-tui.sh "dist/$asset" >&2
+    (cd dist && $sum "$asset" >"$asset.sha256")
+  else
+    echo "build.sh: no cmake, so the config screen wasn't built" >&2
+  fi
+fi
+if [ -n "$migrator" ] && [ -n "$platform" ]; then
+  asset=bitfrost-migrate-$version-$platform
+  release/build-migrations.sh --static "dist/$asset" >&2
+  if command -v sha256sum >/dev/null 2>&1; then sum="sha256sum"; else sum="shasum -a 256"; fi
+  (cd dist && $sum "$asset" >"$asset.sha256")
+fi
 echo "$version"

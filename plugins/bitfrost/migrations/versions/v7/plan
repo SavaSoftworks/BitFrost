@@ -1,0 +1,5 @@
+# Resources used by main.cob, checked before the database opens.
+restore-input.sql
+schema.sql
+totals.sql
+rollups.sql

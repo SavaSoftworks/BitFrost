@@ -1,0 +1,934 @@
+{
+ "config": {
+  "models": {
+   "large": {
+    "provider": "opencode-go",
+    "model": "glm-5.3"
+   },
+   "small": {
+    "provider": "opencode-go",
+    "model": "glm-5.3"
+   }
+  },
+  "providers": {
+   "opencode-go": {
+    "name": "OpenCode Go",
+    "api_key": "fake-key-never-logged",
+    "models": [
+     {
+      "id": "deepseek-v4.1-flash",
+      "name": "DeepSeek V4.1 Flash",
+      "reasoning_levels": [
+       "low",
+       "high",
+       "max"
+      ],
+      "default_reasoning_effort": "high",
+      "can_reason": true
+     },
+     {
+      "id": "glm-5.3",
+      "name": "GLM-5.3",
+      "reasoning_levels": [
+       "low",
+       "high",
+       "max"
+      ],
+      "default_reasoning_effort": "high",
+      "can_reason": true
+     }
+    ]
+   }
+  }
+ },
+ "turns": [
+  [
+   {
+    "emit": {
+     "type": "message",
+     "payload": {
+      "type": "created",
+      "payload": {
+       "id": "u1",
+       "role": "user",
+       "session_id": "$SID",
+       "parts": [
+        {
+         "type": "text",
+         "data": {
+          "text": "List the files."
+         }
+        },
+        {
+         "type": "finish",
+         "data": {
+          "reason": "stop",
+          "time": 1
+         }
+        }
+       ],
+       "model": "",
+       "provider": "",
+       "created_at": 1,
+       "updated_at": 1
+      }
+     }
+    }
+   },
+   {
+    "emit": {
+     "type": "message",
+     "payload": {
+      "type": "created",
+      "payload": {
+       "id": "m1",
+       "role": "assistant",
+       "session_id": "$SID",
+       "parts": [],
+       "model": "deepseek-v4.1-flash",
+       "provider": "opencode-go",
+       "created_at": 1,
+       "updated_at": 1
+      }
+     }
+    }
+   },
+   {
+    "emit": {
+     "type": "message",
+     "payload": {
+      "type": "updated",
+      "payload": {
+       "id": "m1",
+       "role": "assistant",
+       "session_id": "$SID",
+       "parts": [
+        {
+         "type": "reasoning",
+         "data": {
+          "thinking": "Looking",
+          "signature": ""
+         }
+        }
+       ],
+       "model": "deepseek-v4.1-flash",
+       "provider": "opencode-go",
+       "created_at": 1,
+       "updated_at": 1
+      }
+     }
+    }
+   },
+   {
+    "emit": {
+     "type": "message",
+     "payload": {
+      "type": "updated",
+      "payload": {
+       "id": "m1",
+       "role": "assistant",
+       "session_id": "$SID",
+       "parts": [
+        {
+         "type": "reasoning",
+         "data": {
+          "thinking": "Looking at the files.",
+          "signature": ""
+         }
+        },
+        {
+         "type": "text",
+         "data": {
+          "text": "I'll check"
+         }
+        }
+       ],
+       "model": "deepseek-v4.1-flash",
+       "provider": "opencode-go",
+       "created_at": 1,
+       "updated_at": 1
+      }
+     }
+    }
+   },
+   {
+    "emit": {
+     "type": "message",
+     "payload": {
+      "type": "updated",
+      "payload": {
+       "id": "m1",
+       "role": "assistant",
+       "session_id": "$SID",
+       "parts": [
+        {
+         "type": "reasoning",
+         "data": {
+          "thinking": "Looking at the files.",
+          "signature": ""
+         }
+        },
+        {
+         "type": "text",
+         "data": {
+          "text": "I'll check, then create a.txt."
+         }
+        },
+        {
+         "type": "tool_call",
+         "data": {
+          "id": "call_0",
+          "name": "bash",
+          "input": "",
+          "finished": false
+         }
+        }
+       ],
+       "model": "deepseek-v4.1-flash",
+       "provider": "opencode-go",
+       "created_at": 1,
+       "updated_at": 1
+      }
+     }
+    }
+   },
+   {
+    "emit": {
+     "type": "message",
+     "payload": {
+      "type": "updated",
+      "payload": {
+       "id": "m1",
+       "role": "assistant",
+       "session_id": "$SID",
+       "parts": [
+        {
+         "type": "reasoning",
+         "data": {
+          "thinking": "Looking at the files.",
+          "signature": ""
+         }
+        },
+        {
+         "type": "text",
+         "data": {
+          "text": "I'll check, then create a.txt."
+         }
+        },
+        {
+         "type": "tool_call",
+         "data": {
+          "id": "call_0",
+          "name": "bash",
+          "input": "{\"command\":\"git status\"}",
+          "finished": true
+         }
+        },
+        {
+         "type": "tool_call",
+         "data": {
+          "id": "call_1",
+          "name": "bash",
+          "input": "{\"description\":\"Create a.txt\",\"command\":\"touch a.txt\"}",
+          "finished": true
+         }
+        }
+       ],
+       "model": "deepseek-v4.1-flash",
+       "provider": "opencode-go",
+       "created_at": 1,
+       "updated_at": 1
+      }
+     }
+    }
+   },
+   {
+    "emit": {
+     "type": "session",
+     "payload": {
+      "type": "updated",
+      "payload": {
+       "id": "$SID",
+       "parent_session_id": "",
+       "title": "BitFrost task",
+       "message_count": 2,
+       "prompt_tokens": 1200,
+       "completion_tokens": 40,
+       "cost": 0,
+       "todos": [
+        {
+         "content": "Create a.txt",
+         "status": "in_progress",
+         "active_form": "Creating a.txt"
+        }
+       ]
+      }
+     }
+    }
+   },
+   {
+    "hook": {
+     "tool_name": "bash",
+     "tool_input": {
+      "command": "git status"
+     }
+    },
+    "none": [
+     {
+      "emit": {
+       "type": "message",
+       "payload": {
+        "type": "created",
+        "payload": {
+         "id": "tool_call_0",
+         "role": "tool",
+         "session_id": "$SID",
+         "parts": [
+          {
+           "type": "tool_result",
+           "data": {
+            "tool_call_id": "call_0",
+            "name": "bash",
+            "content": "nothing to commit",
+            "metadata": "{\"start_time\":1000,\"end_time\":1040,\"output\":\"nothing to commit\",\"working_directory\":\"$CWD\"}",
+            "is_error": false
+           }
+          },
+          {
+           "type": "finish",
+           "data": {
+            "reason": "stop",
+            "time": 1
+           }
+          }
+         ],
+         "model": "",
+         "provider": "",
+         "created_at": 1,
+         "updated_at": 1
+        }
+       }
+      }
+     }
+    ]
+   },
+   {
+    "hook": {
+     "tool_name": "bash",
+     "tool_input": {
+      "description": "Create a.txt",
+      "command": "touch a.txt"
+     }
+    },
+    "allow": [
+     {
+      "emit": {
+       "type": "message",
+       "payload": {
+        "type": "created",
+        "payload": {
+         "id": "tool_call_1",
+         "role": "tool",
+         "session_id": "$SID",
+         "parts": [
+          {
+           "type": "tool_result",
+           "data": {
+            "tool_call_id": "call_1",
+            "name": "bash",
+            "content": "no output",
+            "metadata": "{\"start_time\":1000,\"end_time\":1250,\"output\":\"\",\"working_directory\":\"$CWD\"}",
+            "is_error": false
+           }
+          },
+          {
+           "type": "finish",
+           "data": {
+            "reason": "stop",
+            "time": 1
+           }
+          }
+         ],
+         "model": "",
+         "provider": "",
+         "created_at": 1,
+         "updated_at": 1
+        }
+       }
+      }
+     }
+    ],
+    "deny": [
+     {
+      "emit": {
+       "type": "message",
+       "payload": {
+        "type": "created",
+        "payload": {
+         "id": "tool_call_1",
+         "role": "tool",
+         "session_id": "$SID",
+         "parts": [
+          {
+           "type": "tool_result",
+           "data": {
+            "tool_call_id": "call_1",
+            "name": "bash",
+            "content": "Tool call blocked by hook. Reason: $REASON",
+            "metadata": "{}",
+            "is_error": true
+           }
+          },
+          {
+           "type": "finish",
+           "data": {
+            "reason": "stop",
+            "time": 1
+           }
+          }
+         ],
+         "model": "",
+         "provider": "",
+         "created_at": 1,
+         "updated_at": 1
+        }
+       }
+      }
+     }
+    ]
+   },
+   {
+    "emit": {
+     "type": "message",
+     "payload": {
+      "type": "updated",
+      "payload": {
+       "id": "m1",
+       "role": "assistant",
+       "session_id": "$SID",
+       "parts": [
+        {
+         "type": "reasoning",
+         "data": {
+          "thinking": "Looking at the files.",
+          "signature": ""
+         }
+        },
+        {
+         "type": "text",
+         "data": {
+          "text": "I'll check, then create a.txt."
+         }
+        },
+        {
+         "type": "tool_call",
+         "data": {
+          "id": "call_0",
+          "name": "bash",
+          "input": "{\"command\":\"git status\"}",
+          "finished": true
+         }
+        },
+        {
+         "type": "tool_call",
+         "data": {
+          "id": "call_1",
+          "name": "bash",
+          "input": "{\"description\":\"Create a.txt\",\"command\":\"touch a.txt\"}",
+          "finished": true
+         }
+        },
+        {
+         "type": "finish",
+         "data": {
+          "reason": "tool_use",
+          "time": 1
+         }
+        }
+       ],
+       "model": "deepseek-v4.1-flash",
+       "provider": "opencode-go",
+       "created_at": 1,
+       "updated_at": 1
+      }
+     }
+    }
+   },
+   {
+    "emit": {
+     "type": "message",
+     "payload": {
+      "type": "created",
+      "payload": {
+       "id": "m2",
+       "role": "assistant",
+       "session_id": "$SID",
+       "parts": [],
+       "model": "deepseek-v4.1-flash",
+       "provider": "opencode-go",
+       "created_at": 1,
+       "updated_at": 1
+      }
+     }
+    }
+   },
+   {
+    "emit": {
+     "type": "message",
+     "payload": {
+      "type": "updated",
+      "payload": {
+       "id": "m2",
+       "role": "assistant",
+       "session_id": "$SID",
+       "parts": [
+        {
+         "type": "tool_call",
+         "data": {
+          "id": "call_2",
+          "name": "edit",
+          "input": "{\"file_path\":\"$CWD/b.txt\",\"old_string\":\"one\",\"new_string\":\"two\"}",
+          "finished": true
+         }
+        }
+       ],
+       "model": "deepseek-v4.1-flash",
+       "provider": "opencode-go",
+       "created_at": 1,
+       "updated_at": 1
+      }
+     }
+    }
+   },
+   {
+    "hook": {
+     "tool_name": "edit",
+     "tool_input": {
+      "file_path": "$CWD/b.txt",
+      "old_string": "one",
+      "new_string": "two"
+     }
+    },
+    "allow": [
+     {
+      "emit": {
+       "type": "message",
+       "payload": {
+        "type": "created",
+        "payload": {
+         "id": "tool_call_2",
+         "role": "tool",
+         "session_id": "$SID",
+         "parts": [
+          {
+           "type": "tool_result",
+           "data": {
+            "tool_call_id": "call_2",
+            "name": "edit",
+            "content": "<result>Content replaced in file</result>",
+            "metadata": "{\"additions\":1,\"removals\":1,\"old_content\":\"one\\n\",\"new_content\":\"two\\n\"}",
+            "is_error": false
+           }
+          },
+          {
+           "type": "finish",
+           "data": {
+            "reason": "stop",
+            "time": 1
+           }
+          }
+         ],
+         "model": "",
+         "provider": "",
+         "created_at": 1,
+         "updated_at": 1
+        }
+       }
+      }
+     }
+    ],
+    "deny": [
+     {
+      "emit": {
+       "type": "message",
+       "payload": {
+        "type": "created",
+        "payload": {
+         "id": "tool_call_2",
+         "role": "tool",
+         "session_id": "$SID",
+         "parts": [
+          {
+           "type": "tool_result",
+           "data": {
+            "tool_call_id": "call_2",
+            "name": "edit",
+            "content": "Tool call blocked by hook. Reason: $REASON",
+            "metadata": "{}",
+            "is_error": true
+           }
+          },
+          {
+           "type": "finish",
+           "data": {
+            "reason": "stop",
+            "time": 1
+           }
+          }
+         ],
+         "model": "",
+         "provider": "",
+         "created_at": 1,
+         "updated_at": 1
+        }
+       }
+      }
+     }
+    ]
+   },
+   {
+    "emit": {
+     "type": "session",
+     "payload": {
+      "type": "updated",
+      "payload": {
+       "id": "$SID",
+       "parent_session_id": "",
+       "title": "BitFrost task",
+       "message_count": 2,
+       "prompt_tokens": 1500,
+       "completion_tokens": 60,
+       "cost": 0,
+       "todos": [
+        {
+         "content": "Create a.txt",
+         "status": "completed",
+         "active_form": ""
+        }
+       ]
+      }
+     }
+    }
+   },
+   {
+    "emit": {
+     "type": "message",
+     "payload": {
+      "type": "updated",
+      "payload": {
+       "id": "m2",
+       "role": "assistant",
+       "session_id": "$SID",
+       "parts": [
+        {
+         "type": "tool_call",
+         "data": {
+          "id": "call_2",
+          "name": "edit",
+          "input": "{\"file_path\":\"$CWD/b.txt\",\"old_string\":\"one\",\"new_string\":\"two\"}",
+          "finished": true
+         }
+        },
+        {
+         "type": "finish",
+         "data": {
+          "reason": "tool_use",
+          "time": 1
+         }
+        }
+       ],
+       "model": "deepseek-v4.1-flash",
+       "provider": "opencode-go",
+       "created_at": 1,
+       "updated_at": 1
+      }
+     }
+    }
+   },
+   {
+    "emit": {
+     "type": "message",
+     "payload": {
+      "type": "created",
+      "payload": {
+       "id": "m3",
+       "role": "assistant",
+       "session_id": "$SID",
+       "parts": [],
+       "model": "deepseek-v4.1-flash",
+       "provider": "opencode-go",
+       "created_at": 1,
+       "updated_at": 1
+      }
+     }
+    }
+   },
+   {
+    "emit": {
+     "type": "message",
+     "payload": {
+      "type": "updated",
+      "payload": {
+       "id": "m3",
+       "role": "assistant",
+       "session_id": "$SID",
+       "parts": [
+        {
+         "type": "text",
+         "data": {
+          "text": "Done: created a.txt and edited b.txt."
+         }
+        },
+        {
+         "type": "finish",
+         "data": {
+          "reason": "end_turn",
+          "time": 1
+         }
+        }
+       ],
+       "model": "deepseek-v4.1-flash",
+       "provider": "opencode-go",
+       "created_at": 1,
+       "updated_at": 1
+      }
+     }
+    }
+   },
+   {
+    "emit": {
+     "type": "session",
+     "payload": {
+      "type": "updated",
+      "payload": {
+       "id": "$SID",
+       "parent_session_id": "",
+       "title": "BitFrost task",
+       "message_count": 2,
+       "prompt_tokens": 1600,
+       "completion_tokens": 12,
+       "cost": 0,
+       "todos": [
+        {
+         "content": "Create a.txt",
+         "status": "completed",
+         "active_form": ""
+        }
+       ]
+      }
+     }
+    }
+   },
+   {
+    "emit": {
+     "type": "session",
+     "payload": {
+      "type": "updated",
+      "payload": {
+       "id": "$SID",
+       "parent_session_id": "",
+       "title": "Create and edit files",
+       "message_count": 2,
+       "prompt_tokens": 1600,
+       "completion_tokens": 12,
+       "cost": 0,
+       "todos": [
+        {
+         "content": "Create a.txt",
+         "status": "completed",
+         "active_form": ""
+        }
+       ]
+      }
+     }
+    }
+   },
+   {
+    "complete": {
+     "message_id": "m3",
+     "text": "Done: created a.txt and edited b.txt."
+    }
+   }
+  ],
+  [
+   {
+    "emit": {
+     "type": "message",
+     "payload": {
+      "type": "created",
+      "payload": {
+       "id": "m4",
+       "role": "assistant",
+       "session_id": "$SID",
+       "parts": [],
+       "model": "deepseek-v4.1-flash",
+       "provider": "opencode-go",
+       "created_at": 1,
+       "updated_at": 1
+      }
+     }
+    }
+   },
+   {
+    "emit": {
+     "type": "message",
+     "payload": {
+      "type": "updated",
+      "payload": {
+       "id": "m4",
+       "role": "assistant",
+       "session_id": "$SID",
+       "parts": [
+        {
+         "type": "tool_call",
+         "data": {
+          "id": "call_3",
+          "name": "bash",
+          "input": "{\"description\":\"Create a.txt\",\"command\":\"touch a.txt\"}",
+          "finished": true
+         }
+        }
+       ],
+       "model": "deepseek-v4.1-flash",
+       "provider": "opencode-go",
+       "created_at": 1,
+       "updated_at": 1
+      }
+     }
+    }
+   },
+   {
+    "hook": {
+     "tool_name": "bash",
+     "tool_input": {
+      "description": "Create a.txt",
+      "command": "touch a.txt"
+     }
+    },
+    "allow": [
+     {
+      "emit": {
+       "type": "message",
+       "payload": {
+        "type": "created",
+        "payload": {
+         "id": "tool_call_3",
+         "role": "tool",
+         "session_id": "$SID",
+         "parts": [
+          {
+           "type": "tool_result",
+           "data": {
+            "tool_call_id": "call_3",
+            "name": "bash",
+            "content": "",
+            "metadata": "{\"start_time\":1,\"end_time\":2,\"output\":\"\"}",
+            "is_error": false
+           }
+          },
+          {
+           "type": "finish",
+           "data": {
+            "reason": "stop",
+            "time": 1
+           }
+          }
+         ],
+         "model": "",
+         "provider": "",
+         "created_at": 1,
+         "updated_at": 1
+        }
+       }
+      }
+     }
+    ],
+    "deny": [
+     {
+      "emit": {
+       "type": "message",
+       "payload": {
+        "type": "created",
+        "payload": {
+         "id": "tool_call_3",
+         "role": "tool",
+         "session_id": "$SID",
+         "parts": [
+          {
+           "type": "tool_result",
+           "data": {
+            "tool_call_id": "call_3",
+            "name": "bash",
+            "content": "Tool call blocked by hook. Reason: $REASON",
+            "metadata": "{}",
+            "is_error": true
+           }
+          },
+          {
+           "type": "finish",
+           "data": {
+            "reason": "stop",
+            "time": 1
+           }
+          }
+         ],
+         "model": "",
+         "provider": "",
+         "created_at": 1,
+         "updated_at": 1
+        }
+       }
+      }
+     }
+    ]
+   },
+   {
+    "emit": {
+     "type": "message",
+     "payload": {
+      "type": "updated",
+      "payload": {
+       "id": "m4",
+       "role": "assistant",
+       "session_id": "$SID",
+       "parts": [
+        {
+         "type": "tool_call",
+         "data": {
+          "id": "call_3",
+          "name": "bash",
+          "input": "{\"description\":\"Create a.txt\",\"command\":\"touch a.txt\"}",
+          "finished": true
+         }
+        },
+        {
+         "type": "text",
+         "data": {
+          "text": "Again."
+         }
+        },
+        {
+         "type": "finish",
+         "data": {
+          "reason": "end_turn",
+          "time": 1
+         }
+        }
+       ],
+       "model": "deepseek-v4.1-flash",
+       "provider": "opencode-go",
+       "created_at": 1,
+       "updated_at": 1
+      }
+     }
+    }
+   },
+   {
+    "complete": {
+     "message_id": "m4",
+     "text": "Again."
+    }
+   }
+  ]
+ ]
+}

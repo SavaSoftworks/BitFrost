@@ -26,7 +26,16 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
+      - name: Install migration build dependencies
+        run: sudo apt-get update && sudo apt-get install -y gnucobol libsqlite3-dev
       - name: Install Claude Code (for the plugin test kit)
         run: npm install -g @anthropic-ai/claude-code
       - run: npm run test:daemon
       - run: npm run test:plugin
+
+  # The TUI builds same way as releases ship it, on every platform, with its tests.
+  tui:
+    uses: ./.github/workflows/tui.yml
+
+  migrations:
+    uses: ./.github/workflows/migrations.yml

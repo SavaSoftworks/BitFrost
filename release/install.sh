@@ -20,6 +20,18 @@ main() {
   DATA=${XDG_DATA_HOME:-$HOME/.local/share}/bitfrost
   BIN_DIR=${BITFROST_BIN_DIR:-$HOME/.local/bin}
   CONFIG=${XDG_CONFIG_HOME:-$HOME/.config}/bitfrost/config.json
+  DB_DATA=${BITFROST_DATA_DIR:-}
+  if [ -z "$DB_DATA" ]; then
+    if [ "$(uname -s)" = Darwin ]; then DB_DATA=$HOME/Library/Application\ Support/BitFrost
+    else DB_DATA=$DATA; fi
+  fi
+
+  case "$(uname -s) $(uname -m)" in
+    "Linux x86_64") tui_platform=linux-x64 ;;
+    "Linux aarch64") tui_platform=linux-arm64 ;;
+    Darwin\ *) tui_platform=darwin-universal ;;
+    *) tui_platform= ;;
+  esac
 
   version=
   from=
@@ -39,6 +51,9 @@ main() {
     esac
   done
   [ -n "$version" ] || [ -n "$from" ] || version=$RELEASE
+  # Local releases can be rebuilt without changing their version. Always use
+  # the supplied files instead of an earlier installation with the same name.
+  [ -z "$from" ] || force=1
 
   need tar
   mkdir -p "$DATA/versions"
@@ -90,7 +105,10 @@ main() {
   fi
 
   if [ -d "$DATA/versions/$version" ] && [ -z "$force" ]; then
+    root=$DATA/versions/$version
     note "Already unpacked" "$(short "$DATA/versions/$version")"
+    add_tui "$DATA/versions/$version"
+    add_migrator "$DATA/versions/$version"
   else
     mkdir "$tmp/x"
     task "Unpacking" "$base" tar -xzf "$tmp/$base" -C "$tmp/x" || die "can't unpack $base: $(cat "$tmp/log")"
@@ -99,16 +117,32 @@ main() {
     [ -f "$manifest" ] || die "$base doesn't look like a bitfrost release"
     inside=$(sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' "$manifest")
     [ "$inside" = "$version" ] || die "$base holds version '$inside', not $version"
-    # Renames, so a version folder is never half there. A running helper keeps
-    # only the files it already opened, so it is restarted below.
+    add_tui "$root"
+    add_migrator "$root"
+  fi
+
+  [ ! -e "$DATA/current" ] || [ -L "$DATA/current" ] || die "$DATA/current isn't a link; move it away and run this again"
+  mkdir -p "$BIN_DIR"
+  link=$BIN_DIR/bitfrost
+  [ ! -e "$link" ] || [ -L "$link" ] || die "$link exists and isn't a link; move it away and run this again"
+  # Migrate before activating the new files, even after an uninstall that kept
+  # history. The shell keeps the data lock until installation finishes.
+  migration_entry=$root/plugins/bitfrost/bin/bitfrostd
+  if [ -f "$root/plugins/bitfrost/migrations/src/runner.cob" ]; then
+    event running "Database" "checking schema and processing pending migrations"
+    "$migration_entry" migrate --install-lock &
+    migration_job=$!
+    wait "$migration_job" || die "database migration failed; the new version was not activated"
+    migration_job=
+    done_ "Database" "schema and data are current"
+  fi
+
+  if [ "$root" != "$DATA/versions/$version" ]; then
     if [ -d "$DATA/versions/$version" ]; then
       mv "$DATA/versions/$version" "$tmp/old"
-      mv "$root" "$DATA/versions/$version"
-      done_ "Unpacked again" "$(short "$DATA/versions/$version")"
-    else
-      mv "$root" "$DATA/versions/$version"
-      done_ "Unpacked" "$(short "$DATA/versions/$version")"
     fi
+    mv "$root" "$DATA/versions/$version"
+    done_ "Unpacked" "$(short "$DATA/versions/$version")"
   fi
 
   # Only replace a link. mv would put the new link inside a real folder.
@@ -147,16 +181,23 @@ main() {
 
   # The release just unpacked asks about its own new settings, so this script needs no list of them.
   # No terminal (3) or Ctrl+C (130) leaves them for later; anything else already said what went wrong.
+  # Older TUI updaters only request events; they still own the terminal input.
+  defer_settings=${BITFROST_DEFER_SETTINGS:-}
+  [ -z "${BITFROST_INSTALL_EVENTS:-}" ] || defer_settings=1
   code=0
-  "$link" setup --new || code=$?
+  BITFROST_DEFER_SETTINGS=$defer_settings "$link" setup --new || code=$?
   case $code in
     0) ;;
-    3 | 130) settings_needed=1 ;;
+    3 | 130)
+      settings_needed=1
+      done_ "New settings" "configure in the TUI or run bitfrost setup"
+      ;;
     *) warn "Could not ask about new settings, so they stay off. Once that's fixed, run: bitfrost setup" ;;
   esac
 
-  # A same-version reinstall is not newer, so Claude would never restart the helper.
-  if [ -n "$force" ] && [ "$previous" = "$version" ] && "$link" status >/dev/null 2>&1; then
+  # Legacy releases had no install-time migration and may still have a helper up.
+  if [ ! -f "$DATA/versions/$version/plugins/bitfrost/migrations/src/runner.cob" ] &&
+    [ -n "$force" ] && [ "$previous" = "$version" ] && "$link" status >/dev/null 2>&1; then
     if task "Helper" "restarting it" "$link" restart; then
       done_ "Helper" "restarted"
     else
@@ -211,7 +252,7 @@ main() {
   if [ -z "$previous" ]; then
     todo "Codex and ZCode work once installed and signed in. For GLM, also run once:"
     cmd "bitfrost setup zcode"
-    todo "opencode, Oh My Pi and Gemini CLI stay off until you turn them on in $(short "$CONFIG")"
+    todo "opencode, Oh My Pi, Gemini CLI and Crush stay off until you turn them on with bitfrost config (or in $(short "$CONFIG"))"
     todo "Setup for each app: https://github.com/$REPO/blob/main/GUIDE.md#setup"
   fi
 }
@@ -299,6 +340,91 @@ verify() {
   [ "$(echo "$got" | tr 'A-F' 'a-f')" = "$(echo "$want" | tr 'A-F' 'a-f')" ] || die "$2 failed its checksum"
 }
 
+# New releases require their migration executable. Releases without the engine
+# retain their original install behavior.
+add_migrator() {
+  [ -f "$1/plugins/bitfrost/migrations/src/runner.cob" ] || return 0
+  migration_bin=$1/plugins/bitfrost/migrations/bin/bitfrost-migrate
+  [ ! -x "$migration_bin" ] || return 0
+  [ -n "$tui_platform" ] || die "no database migration binary for $(uname -s) $(uname -m)"
+  migration_name=bitfrost-migrate-$version-$tui_platform
+  mkdir -p "$tmp/migrate" "${migration_bin%/*}"
+  migration_src=
+  if [ -n "$from" ]; then
+    migration_src=$(dirname "$from")/$migration_name
+    [ -f "$migration_src" ] || migration_src=
+  fi
+  if [ -n "$migration_src" ]; then
+    [ -f "$migration_src.sha256" ] || die "missing checksum: $migration_src.sha256"
+    cp "$migration_src" "$tmp/migrate/$migration_name"
+    cp "$migration_src.sha256" "$tmp/migrate/$migration_name.sha256"
+  else
+    need curl
+    migration_url=https://github.com/$REPO/releases/download/v$version
+    fetch "$migration_url/$migration_name" "$tmp/migrate/$migration_name" || die "can't download $migration_name"
+    curl -fsSL -o "$tmp/migrate/$migration_name.sha256" "$migration_url/$migration_name.sha256" || die "can't download migration checksum"
+  fi
+  verify "$tmp/migrate" "$migration_name"
+  cp "$tmp/migrate/$migration_name" "$migration_bin"
+  chmod 755 "$migration_bin"
+  [ "$(uname -s)" != Darwin ] || xattr -d com.apple.quarantine "$migration_bin" 2>/dev/null || :
+  done_ "Database migrator" "$migration_name"
+}
+
+# Puts the BitFrost TUI binary into $1/tui/bin. A release made before the TUI, or a
+# platform it isn't built for, only warns; a binary that won't download or verify stops the install.
+add_tui() {
+  # A browser marks what it downloads; macOS then refuses to run the unsigned binary.
+  [ "$(uname -s)" != Darwin ] || xattr -dr com.apple.quarantine "$1" 2>/dev/null || :
+  if [ -x "$1/tui/bin/bitfrost-tui" ]; then
+    note "BitFrost TUI" "already there"
+    return 0
+  fi
+  if [ -z "$tui_platform" ]; then
+    warn "No prebuilt BitFrost TUI for $(uname -s) $(uname -m), so bitfrost config won't open"
+    return 0
+  fi
+  mkdir -p "$tmp/tui" "$1/tui/bin" || die "can't make $1/tui/bin"
+  tui_name=bitfrost-tui-$version-$tui_platform
+  tui_src=
+  if [ -n "$from" ]; then
+    tui_src=$(dirname "$from")/$tui_name
+    [ -f "$tui_src" ] || tui_src=
+  fi
+  if [ -n "$tui_src" ]; then
+    cp "$tui_src" "$tmp/tui/$tui_name" || die "can't copy $tui_src"
+    if [ -f "$tui_src.sha256" ]; then
+      cp "$tui_src.sha256" "$tmp/tui/$tui_name.sha256" || die "can't copy $tui_src.sha256"
+      verify "$tmp/tui" "$tui_name"
+    else
+      warn "No $tui_name.sha256 next to it, so its checksum wasn't checked"
+    fi
+  else
+    if ! command -v curl >/dev/null 2>&1; then
+      warn "curl is needed to fetch the BitFrost TUI, so bitfrost config won't open"
+      return 0
+    fi
+    tui_url=https://github.com/$REPO/releases/download/v$version
+    # Ask first, so a release without a TUI warns but a broken download stops.
+    if ! code=$(curl -sSIL -o /dev/null -w '%{http_code}' "$tui_url/$tui_name" 2>"$tmp/log"); then
+      # A local tarball may be installed offline; only a release install needs GitHub.
+      [ -n "$from" ] || die "can't reach $tui_url: $(cat "$tmp/log")"
+      warn "No $tui_name next to $(basename "$from") and GitHub can't be reached, so bitfrost config won't open"
+      return 0
+    fi
+    if [ "$code" = 404 ]; then
+      warn "Release v$version has no BitFrost TUI for $tui_platform, so bitfrost config won't open"
+      return 0
+    fi
+    fetch "$tui_url/$tui_name" "$tmp/tui/$tui_name" || die "can't download $tui_name: $(cat "$tmp/log")"
+    curl -fsSL -o "$tmp/tui/$tui_name.sha256" "$tui_url/$tui_name.sha256" 2>"$tmp/log" || die "can't download $tui_name.sha256: $(cat "$tmp/log")"
+    verify "$tmp/tui" "$tui_name"
+  fi
+  cp "$tmp/tui/$tui_name" "$1/tui/bin/bitfrost-tui" || die "can't place the BitFrost TUI in $1/tui/bin"
+  chmod 755 "$1/tui/bin/bitfrost-tui" || die "can't make $1/tui/bin/bitfrost-tui runnable"
+  done_ "BitFrost TUI" "$tui_name"
+}
+
 check_version() {
   case $1 in
     '' | *[!0-9.]* | .* | *. | *..*) die "not a version: '$1'" ;;
@@ -312,12 +438,13 @@ Installs or updates bitfrost (the Claude Code plugin and the bitfrostd helper).
   install.sh [--version X.Y.Z] [--from bitfrost-X.Y.Z.tar.gz] [--force] [--no-plugin]
 
   --version X.Y.Z   install this release instead of the default
-  --from FILE       install a tarball you already have (checked against FILE.sha256 if it's there)
-  --force           unpack again even if this version is already there, and restart the helper
+  --from FILE       install a local tarball, replacing any cached copy of that version
+  --force           unpack again even if this version is already there
   --no-plugin       leave Claude Code alone (only unpack and link the helper)
 
 With no --version, a release's copy of this script installs that release, and
 any other copy installs the latest. Set BITFROST_REPO=owner/repo to install from a fork.
+Local tarballs are checked against FILE.sha256 when it is present.
 EOF2
 }
 
@@ -347,20 +474,41 @@ header() {
   elif [ "$previous" = "$version" ] && [ -n "$force" ]; then step "Reinstalling BitFrost $version"
   else step "Installing BitFrost $version"; fi
 }
+# With BITFROST_INSTALL_EVENTS set, each step also prints a tab-separated line for the
+# config screen to follow: @@bitfrost, then running, done, note, warn or fail, a label and detail.
+event() { [ -z "${BITFROST_INSTALL_EVENTS:-}" ] || printf '@@bitfrost\t%s\t%s\t%s\n' "$1" "$2" "$3"; }
 step() { printf '%s::%s %s%s%s\n' "$C" "$N" "$B" "$*" "$N"; }
-done_() { printf '   %s✓%s %-20s  %s%s%s\n' "$G" "$N" "$1" "$D" "$2" "$N"; }
-note() { printf '   %s-%s %-20s  %s%s%s\n' "$D" "$N" "$1" "$D" "$2" "$N"; }
-warn() { printf '   %s!%s %s\n' "$Y" "$N" "$*"; }
+done_() {
+  event "done" "$1" "$2"
+  printf '   %s✓%s %-20s  %s%s%s\n' "$G" "$N" "$1" "$D" "$2" "$N"
+}
+note() {
+  event note "$1" "$2"
+  printf '   %s-%s %-20s  %s%s%s\n' "$D" "$N" "$1" "$D" "$2" "$N"
+}
+warn() {
+  event warn "$*" ""
+  printf '   %s!%s %s\n' "$Y" "$N" "$*"
+}
 todo() { printf '   %s-%s %s\n' "$D" "$N" "$*"; }
 cmd() { printf '       %s%s%s\n' "$B" "$*" "$N"; }
 die() {
+  event fail "$*" ""
   printf '%sbitfrost install:%s %s\n' "$R" "$N" "$*" >&2
   exit 1
 }
 
 job=
+migration_job=
 cleanup() {
   [ -z "$job" ] || kill "$job" 2>/dev/null || true
+  if [ -n "$migration_job" ]; then
+    kill -TERM "$migration_job" 2>/dev/null || true
+    wait "$migration_job" 2>/dev/null || true
+  fi
+  if [ -f "$DB_DATA/daemon.lock" ] && [ "$(cat "$DB_DATA/daemon.lock")" = "$$" ]; then
+    rm -f "$DB_DATA/daemon.lock"
+  fi
   rm -rf "$tmp"
   [ -z "$TTY" ] || printf '\033[?25h'
 }
@@ -368,6 +516,7 @@ cleanup() {
 # Redraws one line while job $1 runs: label $2, detail $3, and for a download
 # into file $4 of $5 bytes, how much has arrived.
 spin() {
+  event running "$2" "$3"
   [ -n "$TTY" ] || return 0
   i=0
   # Cut to the terminal width: a wrapped line can't be redrawn in place.

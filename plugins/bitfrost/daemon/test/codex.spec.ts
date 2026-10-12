@@ -475,3 +475,33 @@ test('stopping during unarchive cancels attach before resume and leaves the next
   assert.equal(readLog(logFile).filter((e) => e.method === 'thread/resume').length, 1)
   assert.equal(readLog(logFile).filter((e) => e.method === 'turn/start').length, 2)
 })
+
+
+test('Codex usage identities distinguish equal requests while preserving streaming updates', async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bitfrost-codex-usage-'))
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }))
+  const fixture = path.join(dir, 'usage.jsonl')
+  const usage = (input: number, output: number, totalInput: number, totalOutput: number) => ({
+    method: 'thread/tokenUsage/updated', params: { threadId: 'thr1', turnId: 'turn1', tokenUsage: {
+      last: { inputTokens: input, outputTokens: output, cachedInputTokens: 20 },
+      total: { inputTokens: totalInput, outputTokens: totalOutput, cachedInputTokens: 40 },
+    } },
+  })
+  fs.writeFileSync(fixture, [
+    { method: 'turn/started', params: { threadId: 'thr1', turn: { id: 'turn1' } } },
+    usage(100, 10, 1100, 110), usage(100, 15, 1100, 115), usage(100, 15, 1200, 130),
+    { method: 'turn/completed', params: { threadId: 'thr1', turn: { id: 'turn1', status: 'completed' } } },
+  ].map((m) => JSON.stringify(m)).join('\n') + '\n')
+  process.env.BITFROST_FAKE_CODEX_SCRIPT = fixture
+  t.after(() => { delete process.env.BITFROST_FAKE_CODEX_SCRIPT })
+  const { adapter } = start(t)
+  const s = await spawn(adapter)
+  await until('usage reports', () => s.events.filter((e) => e.type === 'usage').length === 3)
+  const reports = s.events.filter((e) => e.type === 'usage') as any[]
+  assert.equal(reports[0].requestId, reports[1].requestId)
+  assert.notEqual(reports[1].requestId, reports[2].requestId)
+  const firstId = reports[0].requestId
+  await adapter.sendInput(s, 'another turn')
+  await until('second turn usage', () => s.events.filter((e) => e.type === 'usage').length === 6)
+  assert.notEqual((s.events.filter((e) => e.type === 'usage') as any[])[3].requestId, firstId)
+})

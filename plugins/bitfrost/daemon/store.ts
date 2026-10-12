@@ -7,6 +7,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
+import { DB_VERSION } from './db-version.ts'
 import type { AgentEvent, Delivery } from './events.ts'
 import type { Session } from './session.ts'
 
@@ -18,9 +19,47 @@ const detail = (value: unknown) => {
   if (Buffer.byteLength(json) <= 64 * 1024) return json
   return JSON.stringify({ truncated: true, originalBytes: Buffer.byteLength(json), preview: Buffer.from(json).subarray(0, 16 * 1024).toString('utf8') })
 }
+// Usage rolls up by local hour; days are the local days SQLite's 'localtime' gives.
+export const dayOf = (ms: number) => {
+  const d = new Date(ms)
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+export const hourOf = (ms: number) => {
+  const d = new Date(ms)
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate(), d.getHours()).getTime()
+}
+// The rebuild buckets with the same hourOf as live writes, so a repeated autumn hour can't split in two.
+const LOCAL_HOUR = (col: string) => `local_hour(${col})`
+const open = (file: string) => {
+  const db = new DatabaseSync(file)
+  db.function('local_hour', (ms: unknown) => (ms == null ? null : hourOf(Number(ms))))
+  return db
+}
+const USAGE = ['sessions', 'closed_sessions', 'session_ms', 'turns', 'failed_turns', 'turn_ms', 'requests', 'input_tokens', 'output_tokens', 'cached_tokens'] as const
+// updated_at is a store-wide stamp that only grows, so a reader can ask for what changed since it last looked.
+// Persistent upgrades run in the COBOL engine during installation.
+export class MigrationRequiredError extends Error {
+  constructor(version: number) {
+    super(`BitFrost database schema ${version} needs migration to ${DB_VERSION}; run bitfrost migrate or reinstall this release`)
+  }
+}
+type Usage = Extract<AgentEvent, { type: 'usage' }>
+type Bill = { input: number; output: number; cached: number; requests: number }
+export function billed(last: Bill | undefined, e: Usage) {
+  const u = e.billing ?? e
+  const next: Bill = { input: u.inputTokens ?? 0, output: u.outputTokens ?? 0, cached: u.cachedInputTokens ?? 0, requests: e.billing?.requests ?? 1 }
+  const previous = last ?? { input: 0, output: 0, cached: 0, requests: 0 }
+  return { input: Math.max(0, next.input - previous.input), output: Math.max(0, next.output - previous.output),
+    cached: Math.max(0, next.cached - previous.cached), requests: Math.max(0, next.requests - previous.requests),
+    last: { input: Math.max(next.input, previous.input), output: Math.max(next.output, previous.output),
+      cached: Math.max(next.cached, previous.cached), requests: Math.max(next.requests, previous.requests) } }
+}
+// Only what a subagent row shows, so lists never read the rest of a session.
+const ROW = 'id,harness,agent,model,effort,title,state,created_at,closed_at,close_reason,changed_at,tokens,cached_tokens,turns,tool_calls,active_ms'
+// A list of ids bound as one JSON value, so the statement is prepared once whatever the count.
+const IDS = 'SELECT value FROM json_each(?)'
 const statusOf = (e: Row) => e.ok === false || ['failed', 'error'].includes(e.status) ? 'error' : e.status === 'declined' ? 'declined' : 'ok'
 
-const VERSION = 3
 const EVENT_BYTES = 256 * 1024
 const bodyJSON = (e: AgentEvent) => {
   const json = JSON.stringify(e)
@@ -50,6 +89,7 @@ export class Store {
   private statements = new Map<string, any>()
   private sessions = new Map<string, Row>()
   private seeding = false
+  private lastStamp = 0
   private opened = false
   degraded = false
   error: string | null = null
@@ -66,20 +106,22 @@ export class Store {
       fs.chmodSync(file, 0o600)
     }
     try {
-      this.database = new DatabaseSync(file)
+      this.database = open(file)
       this.db.exec('PRAGMA busy_timeout=5000')
       const version = (this.database.prepare('PRAGMA user_version').get() as Row).user_version
-      if (version > VERSION) {
+      if (version > DB_VERSION) {
         this.database.close()
-        this.database = new DatabaseSync(':memory:')
+        this.database = open(':memory:')
         this.degraded = true
         this.error = `BitFrost database version ${version} is newer than this daemon; persistence disabled`
         try { this.log(this.error) } catch {}
       }
+      if (version > 0 && version < DB_VERSION) throw new MigrationRequiredError(version)
       if (exclusive && !this.degraded) this.db.exec('PRAGMA locking_mode=EXCLUSIVE')
       this.initialize()
       this.opened = true
     } catch (error) {
+      if (error instanceof MigrationRequiredError) { try { this.database.close() } catch {}; throw error }
       if (exclusive && /database is locked|database is busy/i.test((error as Error).message)) { try { this.database.close() } catch {}; throw error }
       this.degrade(error)
     }
@@ -88,55 +130,50 @@ export class Store {
     }
   }
 
-  private initialize() {
-    this.db.exec('PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA busy_timeout=5000; PRAGMA foreign_keys=ON')
-    this.db.exec(`
-      BEGIN IMMEDIATE;
-      CREATE TABLE IF NOT EXISTS sessions (
-        id TEXT PRIMARY KEY, harness TEXT, agent TEXT, model TEXT, effort TEXT, plan TEXT,
-        native_ref TEXT, cwd TEXT, title TEXT, claude_session TEXT, claude_agent TEXT,
-        lease_id TEXT, parent_mode TEXT, state TEXT, created_at INTEGER, updated_at INTEGER,
-        closed_at INTEGER, close_reason TEXT, last_seq INTEGER NOT NULL DEFAULT 0
-      );
-      CREATE TABLE IF NOT EXISTS turns (
-        id TEXT PRIMARY KEY, session_id TEXT REFERENCES sessions(id) ON DELETE CASCADE,
-        seq_start INTEGER, seq_end INTEGER, started_at INTEGER, ended_at INTEGER,
-        status TEXT, end_reason TEXT, provider_error_code TEXT, error TEXT, plan TEXT,
-        final_text TEXT, input_tokens INTEGER DEFAULT 0, output_tokens INTEGER DEFAULT 0,
-        cached_tokens INTEGER DEFAULT 0, requests INTEGER DEFAULT 0
-      );
-      CREATE TABLE IF NOT EXISTS events (
-        session_id TEXT REFERENCES sessions(id) ON DELETE CASCADE, seq INTEGER, ts INTEGER,
-        type TEXT, turn_id TEXT, body TEXT, PRIMARY KEY(session_id, seq)
-      ) WITHOUT ROWID;
-      CREATE TABLE IF NOT EXISTS messages (
-        id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT REFERENCES sessions(id) ON DELETE CASCADE,
-        turn_id TEXT REFERENCES turns(id) ON DELETE CASCADE, seq INTEGER, ts INTEGER,
-        role TEXT, kind TEXT, item_id TEXT, name TEXT, text TEXT, status TEXT, detail TEXT, approval_id TEXT
-      );
-      CREATE TABLE IF NOT EXISTS inbox (
-        id TEXT PRIMARY KEY, session_id TEXT REFERENCES sessions(id) ON DELETE CASCADE,
-        ts INTEGER, sender TEXT, text TEXT, delivery TEXT, state TEXT,
-        consumed_turn TEXT, consumed_at INTEGER, client_input_id TEXT
-      );
-      CREATE INDEX IF NOT EXISTS turns_session ON turns(session_id, seq_start);
-      CREATE INDEX IF NOT EXISTS messages_session ON messages(session_id, seq);
-      CREATE INDEX IF NOT EXISTS messages_turn ON messages(session_id, turn_id, seq);
-      CREATE INDEX IF NOT EXISTS messages_active ON messages(session_id,turn_id,seq DESC) WHERE status='running' AND kind IN ('tool','command');
-      CREATE INDEX IF NOT EXISTS messages_item ON messages(session_id, item_id);
-      CREATE INDEX IF NOT EXISTS inbox_session ON inbox(session_id, state, ts);
-    `)
-    try {
-      const columns = this.stmt('PRAGMA table_info(turns)').all() as Row[]
-      if (!columns.some((r) => r.name === 'pgid')) this.db.exec('ALTER TABLE turns ADD COLUMN pgid INTEGER; ALTER TABLE turns ADD COLUMN process_identity TEXT')
-      const messages = this.stmt('PRAGMA table_info(messages)').all() as Row[]
-      if (!messages.some((r) => r.name === 'approval_id')) {
-        this.db.exec("ALTER TABLE messages ADD COLUMN approval_id TEXT; UPDATE messages SET approval_id=COALESCE(json_extract(detail,'$.approvalId'),(SELECT json_extract(body,'$.approvalId') FROM events WHERE events.session_id=messages.session_id AND events.seq=messages.seq AND events.type='approval_requested')) WHERE kind='approval'")
+  // Switching a new file to WAL doesn't wait out the busy timeout when another
+  // process opens it at the same moment, so try again for up to the same 5 seconds.
+  private walMode() {
+    for (let tries = 0; ; tries++) {
+      try {
+        this.db.exec('PRAGMA journal_mode=WAL')
+        return
+      } catch (error) {
+        if (tries >= 250 || !/database is locked|database is busy/i.test((error as Error).message)) throw error
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20)
       }
-      const inbox = this.stmt('PRAGMA table_info(inbox)').all() as Row[]
-      if (!inbox.some((r) => r.name === 'client_input_id')) this.db.exec('ALTER TABLE inbox ADD COLUMN client_input_id TEXT')
-      this.db.exec(`CREATE INDEX IF NOT EXISTS messages_approval ON messages(session_id,approval_id); CREATE UNIQUE INDEX IF NOT EXISTS inbox_client_input ON inbox(session_id,client_input_id) WHERE client_input_id IS NOT NULL; PRAGMA user_version=${VERSION}; COMMIT`)
-    } catch (e) { this.db.exec('ROLLBACK'); throw e }
+    }
+  }
+
+  private initialize() {
+    this.walMode()
+    this.db.exec('PRAGMA synchronous=NORMAL; PRAGMA busy_timeout=5000; PRAGMA foreign_keys=ON')
+    this.db.exec('BEGIN IMMEDIATE')
+    try {
+      const from = (this.db.prepare('PRAGMA user_version').get() as Row).user_version
+      if (from === 0) {
+        // Empty development/test and memory stores need only the current schema.
+        // Existing databases never run migrations or historical data work here.
+        if (this.db.prepare("SELECT 1 FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' LIMIT 1").get()) throw new MigrationRequiredError(from)
+        this.db.exec(fs.readFileSync(new URL(`../migrations/versions/v${DB_VERSION}/schema.sql`, import.meta.url), 'utf8'))
+        this.db.exec(fs.readFileSync(new URL(`../migrations/versions/v${DB_VERSION}/indexes.sql`, import.meta.url), 'utf8'))
+        this.db.exec(`PRAGMA user_version=${DB_VERSION}`)
+      } else if (from !== DB_VERSION) throw new MigrationRequiredError(from)
+      this.db.prepare('SELECT u.updated_at,s.request_input,r.request_id FROM usage_hours u,sessions s,usage_requests r LIMIT 0').all()
+      this.db.exec('COMMIT')
+    } catch (error) { this.db.exec('ROLLBACK'); throw error }
+  }
+
+  private billUsage(sessionId: string, turnId: string, e: Usage) {
+    // Legacy events have no request identity. Keep their old within-turn grouping, but never
+    // let a previous turn suppress a new request. Current adapters supply native identities.
+    const id = e.requestId ? `request:${e.requestId}` : `legacy:${turnId}`
+    let previous = this.stmt('SELECT input_tokens AS input,output_tokens AS output,cached_tokens AS cached,requests FROM usage_requests WHERE session_id=? AND request_id=?').get(sessionId, id) as Bill | undefined
+    if (!e.requestId && previous?.input !== (e.billing ?? e).inputTokens) previous = undefined
+    const b = billed(previous, e)
+    if (previous && !b.input && !b.output && !b.cached && !b.requests) return b
+    this.stmt('INSERT INTO usage_requests VALUES (?,?,?,?,?,?) ON CONFLICT(session_id,request_id) DO UPDATE SET input_tokens=excluded.input_tokens,output_tokens=excluded.output_tokens,cached_tokens=excluded.cached_tokens,requests=excluded.requests')
+      .run(sessionId, id, b.last.input, b.last.output, b.last.cached, b.last.requests)
+    return b
   }
 
   private stmt(sql: string) {
@@ -160,7 +197,7 @@ export class Store {
       this.error = `BitFrost store degraded: ${error instanceof Error ? error.message : String(error)}; persistence disabled`
       try { this.log(this.error) } catch {}
       try { this.database.close() } catch {}
-      this.database = new DatabaseSync(':memory:')
+      this.database = open(':memory:')
       this.statements.clear()
       this.sessions.clear()
       this.degraded = true
@@ -199,10 +236,18 @@ export class Store {
     let old = this.sessions.get(i.id)
     if (!old) old = this.stmt('SELECT * FROM sessions WHERE id=?').get(i.id)
     const columns = Object.keys(row) as (keyof typeof row)[]
-    if (!old) this.stmt(`INSERT INTO sessions (${columns.join(',')}) VALUES (${columns.map(() => '?').join(',')})`).run(...columns.map((c) => row[c]))
+    if (!old) {
+      this.stmt(`INSERT INTO sessions (${columns.join(',')},changed_at) VALUES (${columns.map(() => '?').join(',')},?)`).run(...columns.map((c) => row[c]), this.stamp())
+      this.addUsage(i.harness, i.model, row.created_at ?? Date.now(), { sessions: 1 })
+      if (row.closed_at != null) this.addUsage(i.harness, i.model, row.closed_at, { closed_sessions: 1, session_ms: Math.max(0, row.closed_at - (row.created_at ?? row.closed_at)) })
+    }
     else {
       const changed = columns.filter((c) => c !== 'id' && row[c] !== old![c])
-      if (changed.length) this.stmt(`UPDATE sessions SET ${changed.map((c) => `${c}=?`).join(',')} WHERE id=?`).run(...changed.map((c) => row[c]), i.id)
+      if (changed.length) this.stmt(`UPDATE sessions SET ${changed.map((c) => `${c}=?`).join(',')},changed_at=? WHERE id=?`).run(...changed.map((c) => row[c]), this.stamp(), i.id)
+      // A session's time counts when it closes; reopening takes that back.
+      const created = row.created_at ?? old.created_at
+      if (old.closed_at == null && row.closed_at != null) this.addUsage(i.harness, i.model, row.closed_at, { closed_sessions: 1, session_ms: Math.max(0, row.closed_at - (created ?? row.closed_at)) })
+      else if (old.closed_at != null && row.closed_at == null) this.addUsage(i.harness, i.model, old.closed_at, { closed_sessions: -1, session_ms: -Math.max(0, old.closed_at - (created ?? old.closed_at)) })
     }
     this.sessions.set(i.id, row)
   }
@@ -216,10 +261,19 @@ export class Store {
       if (e.type === 'turn_started') {
         this.stmt(`INSERT INTO turns (id,session_id,seq_start,started_at,status,plan,final_text,pgid,process_identity) VALUES (?,?,?,?,?,?,?,?,?)`).run(e.turnId, s.info.id, e.seq, e.ts, 'running', s.info.plan ?? null, '', s.nativeRef?.process?.pgid, s.nativeRef?.process ? JSON.stringify(s.nativeRef.process) : null)
       } else if (e.type === 'turn_completed') {
+        const started = this.stmt('SELECT started_at FROM turns WHERE id=? AND session_id=? AND ended_at IS NULL').get(e.turnId, s.info.id) as Row | undefined
         this.stmt(`UPDATE turns SET seq_end=?,ended_at=?,status=?,end_reason=?,provider_error_code=?,error=?,plan=COALESCE(?,plan),final_text=? WHERE id=? AND session_id=?`).run(e.seq, e.ts, e.status, e.reason, e.providerErrorCode, e.error, e.plan, e.finalText ?? '', e.turnId, s.info.id)
+        if (started) {
+          const ms = Math.max(0, e.ts - (started.started_at ?? e.ts))
+          this.addUsage(s.info.harness, s.info.model, e.ts, { turns: 1, failed_turns: e.status === 'failed' ? 1 : 0, turn_ms: ms })
+          this.stmt('UPDATE sessions SET turns=turns+1,active_ms=active_ms+?,changed_at=? WHERE id=?').run(ms, this.stamp(), s.info.id)
+        }
         this.stmt("UPDATE messages SET seq=?,ts=?,status='error' WHERE session_id=? AND turn_id=? AND status='running'").run(e.seq, e.ts, s.info.id, e.turnId)
       } else if (e.type === 'usage' && turnId) {
-        this.stmt('UPDATE turns SET input_tokens=input_tokens+?,output_tokens=output_tokens+?,cached_tokens=cached_tokens+?,requests=requests+1 WHERE id=?').run(e.inputTokens ?? 0, e.outputTokens ?? 0, e.cachedInputTokens ?? 0, turnId)
+        const b = this.billUsage(s.info.id, turnId, e)
+        this.stmt('UPDATE turns SET input_tokens=input_tokens+?,output_tokens=output_tokens+?,cached_tokens=cached_tokens+?,requests=requests+? WHERE id=?').run(b.input, b.output, b.cached, b.requests, turnId)
+        this.addUsage(s.info.harness, s.info.model, e.ts, { requests: b.requests, input_tokens: b.input, output_tokens: b.output, cached_tokens: b.cached })
+        this.stmt('UPDATE sessions SET tokens=tokens+?,cached_tokens=cached_tokens+?,request_input=?,request_output=?,changed_at=? WHERE id=?').run(b.input + b.output, b.cached, b.last.input, b.last.output, this.stamp(), s.info.id)
       } else if (e.type === 'user_input') {
         this.stmt('INSERT INTO inbox (id,session_id,ts,sender,text,delivery,state,client_input_id) VALUES (?,?,?,?,?,?,?,?)').run(e.inputId, s.info.id, e.ts, e.sender, e.text, e.delivery, 'pending', e.clientInputId)
       } else if (e.type === 'input_consumed') {
@@ -273,6 +327,7 @@ export class Store {
       }
     }
     this.stmt('INSERT INTO messages (session_id,turn_id,seq,ts,role,kind,item_id,name,text,status,detail,approval_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)').run(sessionId, turnId, e.seq, e.ts, role, kind, itemId, name, text, status, detail(e), e.type === 'approval_requested' ? e.approvalId : null)
+    if (kind === 'tool' || kind === 'command' || kind === 'file_change') this.stmt('UPDATE sessions SET tool_calls=tool_calls+1,changed_at=? WHERE id=?').run(this.stamp(), sessionId)
   }
 
   has(id: string): boolean { return this.read(() => !!this.stmt('SELECT 1 FROM sessions WHERE id=?').get(id)) }
@@ -297,6 +352,82 @@ export class Store {
     return this.read(() => {
       const row = this.stmt('SELECT id,delivery FROM inbox WHERE session_id=? AND client_input_id=?').get(id, clientInputId) as Row | undefined
       return row ? { inputId: row.id as string, delivery: row.delivery as Delivery } : null
+    })
+  }
+
+  // A store-wide stamp that only grows, even for writes in the same millisecond.
+  private stamp() {
+    if (!this.lastStamp) {
+      const seen = this.stmt('SELECT MAX(m) AS m FROM (SELECT MAX(updated_at) AS m FROM usage_hours UNION ALL SELECT MAX(changed_at) FROM sessions)').get() as Row | undefined
+      this.lastStamp = Number(seen?.m ?? 0)
+    }
+    this.lastStamp = Math.max(Date.now(), this.lastStamp + 1)
+    return this.lastStamp
+  }
+
+  private addUsage(harness: string, model: string, at: number, add: Partial<Record<typeof USAGE[number], number>>) {
+    const cols = USAGE.filter((c) => add[c])
+    if (!cols.length) return
+    this.stmt(`INSERT INTO usage_hours (harness,model,hour,first_at,last_at,updated_at${cols.map((c) => `,${c}`).join('')}) VALUES (?,?,?,?,?,?${cols.map(() => ',?').join('')})
+      ON CONFLICT(harness,model,hour) DO UPDATE SET first_at=MIN(first_at,excluded.first_at),last_at=MAX(last_at,excluded.last_at),updated_at=excluded.updated_at${cols.map((c) => `,${c}=${c}+excluded.${c}`).join('')}`)
+      .run(harness, model, hourOf(at), at, at, this.stamp(), ...cols.map((c) => add[c]))
+  }
+
+  // One model's hourly usage rows changed after since (0 for all of them), and the newest stamp seen.
+  usageRows(harness: string, model: string, since = 0): { rows: Row[]; stamp: number } {
+    return this.read(() => {
+      const rows = this.stmt('SELECT * FROM usage_hours WHERE harness=? AND model=? AND updated_at>? ORDER BY hour').all(harness, model, since) as Row[]
+      return { rows, stamp: rows.reduce((m, r) => Math.max(m, Number(r.updated_at ?? 0)), since) }
+    })
+  }
+
+  // Sessions as the status page lists them, from their kept totals.
+  private subagentRow(r: Row) {
+    return { id: r.id, harness: r.harness, agent: r.agent, model: r.model, effort: r.effort, title: r.title, state: r.state,
+      createdAt: r.created_at, closedAt: r.closed_at, closeReason: r.close_reason, changedAt: r.changed_at,
+      tokens: r.tokens ?? 0, cachedTokens: r.cached_tokens ?? 0, turns: r.turns ?? 0, toolCalls: r.tool_calls ?? 0, activeMs: r.active_ms ?? 0 }
+  }
+
+  // The time a running turn began, for sessions that have one.
+  private turnStarts(ids: string[]) {
+    if (!ids.length) return new Map<string, number>()
+    const rows = this.stmt(`SELECT session_id, MAX(started_at) AS at FROM turns WHERE session_id IN (${IDS}) AND ended_at IS NULL GROUP BY session_id`).all(JSON.stringify(ids)) as Row[]
+    return new Map(rows.map((r) => [String(r.session_id), Number(r.at)]))
+  }
+
+  private withTurns(rows: Row[]) {
+    const starts = this.turnStarts(rows.map((r) => r.id))
+    return rows.map((r) => ({ ...this.subagentRow(r), turnStartedAt: starts.get(r.id) ?? null }))
+  }
+
+  subagentsById(ids: string[]) {
+    return this.read(() => (ids.length ? this.withTurns(this.stmt(`SELECT ${ROW} FROM sessions WHERE id IN (${IDS})`).all(JSON.stringify(ids)) as Row[]) : []))
+  }
+
+  // A page of sessions, newest first, by position: before or after a session's (createdAt, id), or the oldest page.
+  subagentPage(opts: { before?: [number, string]; after?: [number, string]; oldest?: boolean; limit: number; count?: boolean }) {
+    return this.read(() => {
+      const limit = Math.max(1, Math.min(500, Math.floor(opts.limit)))
+      const from = `SELECT ${ROW} FROM sessions WHERE created_at IS NOT NULL`
+      let rows: Row[]
+      if (opts.before) rows = this.stmt(`${from} AND (created_at,id)<(?,?) ORDER BY created_at DESC,id DESC LIMIT ?`).all(...opts.before, limit + 1) as Row[]
+      else if (opts.after) rows = this.stmt(`${from} AND (created_at,id)>(?,?) ORDER BY created_at,id LIMIT ?`).all(...opts.after, limit + 1) as Row[]
+      else if (opts.oldest) rows = this.stmt(`${from} ORDER BY created_at,id LIMIT ?`).all(limit + 1) as Row[]
+      else rows = this.stmt(`${from} ORDER BY created_at DESC,id DESC LIMIT ?`).all(limit + 1) as Row[]
+      const more = rows.length > limit
+      rows = rows.slice(0, limit)
+      if (opts.after || opts.oldest) rows.reverse()
+      // The total sizes the list's scrollbar; a count over an index, so only page loads ask for it.
+      const total = opts.count ? Number((this.stmt('SELECT COUNT(*) AS n FROM sessions WHERE created_at IS NOT NULL').get() as Row).n) : null
+      return { rows: this.withTurns(rows), more, total }
+    })
+  }
+
+  // Of the given sessions, those changed after since, and the newest stamp seen.
+  subagentsChanged(ids: string[], since: number) {
+    return this.read(() => {
+      const rows = ids.length ? this.stmt(`SELECT ${ROW} FROM sessions WHERE id IN (${IDS}) AND changed_at>?`).all(JSON.stringify(ids), since) as Row[] : []
+      return { rows: this.withTurns(rows), stamp: rows.reduce((m, r) => Math.max(m, Number(r.changed_at ?? 0)), since) }
     })
   }
 

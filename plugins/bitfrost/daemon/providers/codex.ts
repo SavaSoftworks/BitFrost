@@ -506,7 +506,14 @@ export class CodexAdapter implements Provider {
       }
       case 'thread/tokenUsage/updated': {
         const last = p.tokenUsage?.last
-        if (last) emit({ type: 'usage', inputTokens: last.inputTokens ?? 0, outputTokens: last.outputTokens ?? 0, cachedInputTokens: last.cachedInputTokens ?? 0 })
+        if (last) {
+          const total = p.tokenUsage?.total
+          // The cumulative usage before this request stays fixed as its output grows.
+          // Include the turn so identical calls in separate turns never collide.
+          const before = total ? `${total.inputTokens - last.inputTokens}:${total.outputTokens - last.outputTokens}` : String(last.inputTokens)
+          const requestId = `${p.turnId ?? session.activeTurnId}:${before}`
+          emit({ type: 'usage', requestId, inputTokens: last.inputTokens ?? 0, outputTokens: last.outputTokens ?? 0, cachedInputTokens: last.cachedInputTokens ?? 0 })
+        }
         return
       }
       case 'item/agentMessage/delta':
@@ -623,9 +630,24 @@ function errorText(raw: string | undefined): string | undefined {
 }
 
 // Try the desktop app's newest downloaded Codex, then its bundled copy.
-const BUNDLED_CODEX = ['/usr/lib/chatgpt/resources/codex', '/Applications/ChatGPT.app/Contents/Resources/codex']
+export function bundledCodexPaths(applications = ['/Applications', path.join(os.homedir(), 'Applications')]): string[] {
+  return [
+    '/usr/lib/chatgpt/resources/codex-cli/bin/codex',
+    '/usr/lib/chatgpt/resources/codex-cli/codex',
+    '/usr/lib/chatgpt/resources/codex',
+    ...applications.flatMap((dir) => {
+      const resources = path.join(dir, 'ChatGPT.app', 'Contents', 'Resources')
+      return [
+        path.join(resources, 'codex-cli', 'CodexCLI.app', 'Contents', 'MacOS', 'codex'),
+        path.join(resources, 'codex-cli', 'bin', 'codex'),
+        path.join(resources, 'codex-cli', 'codex'),
+        path.join(resources, 'codex'),
+      ]
+    }),
+  ]
+}
 
-export function desktopCodex(codexHome = process.env.CODEX_HOME ?? path.join(os.homedir(), '.codex'), bundled = BUNDLED_CODEX): string | null {
+export function desktopCodex(codexHome = process.env.CODEX_HOME ?? path.join(os.homedir(), '.codex'), bundled = bundledCodexPaths()): string | null {
   const releases = path.join(codexHome, 'packages', 'app-server-daemon', 'releases')
   let names: string[] = []
   try {
@@ -639,6 +661,7 @@ export function desktopCodex(codexHome = process.env.CODEX_HOME ?? path.join(os.
   const downloaded = names.filter((n) => version(n).length === 3).sort(newestFirst).map((n) => path.join(releases, n, 'bin', 'codex'))
   for (const bin of [...downloaded, ...bundled]) {
     try {
+      if (!fs.statSync(bin).isFile()) continue
       fs.accessSync(bin, fs.constants.X_OK)
       return bin
     } catch {}
@@ -648,10 +671,13 @@ export function desktopCodex(codexHome = process.env.CODEX_HOME ?? path.join(os.
 
 export const codexProvider: ProviderFactory = {
   id: 'codex',
+  displayName: 'Codex',
+  vendor: 'OpenAI',
   create(env: ProviderEnv) {
     const chosen = process.env.BITFROST_CODEX_BIN ?? env.config.bin ?? env.resolveBinary('codex')
     if (chosen) return new CodexAdapter(chosen, env.log, env.recorder('codex'))
     const bin = desktopCodex()
     return bin ? new CodexAdapter(bin, env.log, env.recorder('codex'), () => desktopCodex()) : null
   },
+  detect: (env) => process.env.BITFROST_CODEX_BIN ?? env.config.bin ?? env.resolveBinary('codex') ?? desktopCodex(),
 }

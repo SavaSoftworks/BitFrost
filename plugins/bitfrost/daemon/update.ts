@@ -10,23 +10,17 @@ import os from 'node:os'
 import path from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { VERSION } from './config.ts'
+import { newer } from './version.ts'
+export { newer } from './version.ts'
 import { done, fail, step, task } from './ui.ts'
 
 const REPO = process.env.BITFROST_REPO || 'SavaSoftworks/BitFrost'
-
-export function newer(a: string, b: string): boolean {
-  const x = a.split('.').map(Number)
-  const y = b.split('.').map(Number)
-  for (let i = 0; i < Math.max(x.length, y.length); i++) {
-    const d = (x[i] ?? 0) - (y[i] ?? 0)
-    if (d) return d > 0
-  }
-  return false
-}
+// A stalled network must not hang an update; GitHub answers well within this.
+export const FETCH_MS = 20_000
 
 // GitHub redirects /releases/latest to the newest tag. No API call, so no rate limit.
 export async function latestVersion(base: string): Promise<string> {
-  const r = await fetch(`${base}/releases/latest`, { method: 'HEAD', redirect: 'manual' })
+  const r = await fetch(`${base}/releases/latest`, { method: 'HEAD', redirect: 'manual', signal: AbortSignal.timeout(FETCH_MS) })
   const v = (r.headers.get('location') ?? '').split('/').pop()!.replace(/^v/, '')
   if (!/^\d+(\.\d+)*$/.test(v)) throw new Error(r.status === 404 ? 'no such repository' : 'no release yet')
   return v
@@ -52,7 +46,7 @@ export async function update(base = `https://github.com/${REPO}`, current = VERS
   let script: string
   try {
     script = await task('Installer', `downloading install.sh from v${latest}`, async () => {
-      const r = await fetch(url)
+      const r = await fetch(url, { signal: AbortSignal.timeout(FETCH_MS) })
       if (!r.ok) throw new Error(`HTTP ${r.status}`)
       return r.text()
     })

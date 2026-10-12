@@ -18,8 +18,9 @@ Thanks for helping. Bug reports, fixes and support for more apps are all welcome
 | `plugins/bitfrost/daemon/test/` | Tests that replay recorded app output through each provider, and one that runs the helper itself against a fake Codex (`npm run test:daemon`). They are named `*.spec.ts` so the plugin test kit leaves them alone. `npm test` runs both suites. |
 | `plugins/bitfrost/bin/bitfrostd` | Starts the helper and finds a usable Node. The `bitfrost` command links to it. |
 | `release/install.sh` | The installer, attached to every release as is. |
-| `release/build.sh` | Builds `dist/bitfrost-<version>.tar.gz` and its `.sha256`. |
-| `.github/workflows/release.yml` | Tests every pull request. On main, makes a release when the version in `plugin.json` has none yet. |
+| `release/build.sh` | Builds the release archive, TUI and COBOL migration engine. |
+| `.github/workflows/tests.yml` | Tests every pull request, including Linux and macOS release binaries. |
+| `.github/workflows/release.yml` | Also tests packaging and installation for main. Makes a release when the version in `plugin.json` has none yet. |
 
 ## Installing from a checkout
 
@@ -29,6 +30,46 @@ To work on BitFrost itself, install the plugin from your checkout:
 claude plugin marketplace add /path/to/bitfrost
 claude plugin install bitfrost@bitfrost --scope user
 ```
+
+## Building the TUI
+
+**How do I get the config screen?** Run release/build-tui.sh once; the bitfrost
+command finds tui/build/bitfrost-tui on its own. No cmake or C++ compiler?
+Skip it: everything but the config screen works without it.
+
+**How should the C++ look?** tui/.clang-format decides, the same style as Eden-Browser.
+Run clang-format -i on the files you touch; `npm run check` and CI check the style.
+
+## Checking changes locally
+
+```sh
+npm run check             # Native suites, style, shell checks and release migration tests
+npm run check:migrations  # Static musl migration engine on Linux; universal engine on macOS
+npm run check:native      # Host suites only; omit the additional release migration build
+npm run check:ci:linux    # Optional: exact Alpine migration/TUI checks; requires Docker
+```
+
+`check` requires Node 24 or newer, Claude Code, GnuCOBOL, SQLite development
+headers, a C++ compiler, CMake, Python 3, ShellCheck and clang-format 23 or newer.
+Release migration checks also need Make, m4, curl, tar, unzip and timezone data;
+Linux needs `musl-gcc` (`musl-tools` on Debian/Ubuntu). Set `BITFROST_MUSL_CC`
+if your musl compiler has another name. Missing tools fail the check instead
+of silently skipping tests. The first migration check downloads pinned sources
+and builds GnuCOBOL's runtime, GMP and SQLite. These local checks need no Docker.
+
+Builds share the half-core CPU budget and run sequentially. Direct release
+migration caches live under `dist/check-migrations/`, separate from native
+build caches; remove that directory to force a clean build. Tests use temporary
+databases. The supplied release executable is used for the migration regressions,
+including daylight-saving gaps that can differ between glibc and musl.
+
+Linux checks cover this machine's architecture. CI still checks the Alpine TUI,
+other architectures, and release installation. For an exact Alpine reproduction,
+the optional `check:ci:linux` calls the same `release/check-linux.sh` as CI,
+using Alpine 3.24 for migrations and 3.22 for the TUI. That command alone needs
+a running Docker daemon accessible to your user and caches under
+`dist/check-linux/`. Direct musl checks catch libc differences while still
+using the host's compiler versions and timezone data.
 
 ## Ground rules
 
@@ -71,6 +112,10 @@ A setting is something BitFrost asks about before it turns on, like official han
 ## Releases
 
 The version in `plugins/bitfrost/.claude-plugin/plugin.json` is the version of everything: plugin, helper and release. When a change reaches main with a version that has no release yet, CI tests it and makes release `v<version>` with `bitfrost-<version>.tar.gz`, its `.sha256`, and `release/install.sh`. A change that doesn't bump the version is tested but not released. To try a release locally, run `release/build.sh`, then `sh release/install.sh --from dist/bitfrost-<version>.tar.gz`.
+
+On macOS, building release archives also requires GNU tar (`brew install gnu-tar`).
+The build script finds Homebrew's `gtar` automatically; the TUI-only build does not
+need it. Checksums use `sha256sum` when available or macOS's `shasum` otherwise.
 
 ## License
 

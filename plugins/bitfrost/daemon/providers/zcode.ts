@@ -22,6 +22,7 @@ const CODING_PLAN = 'account:zai-individual-coding-plan'
 type Json = any
 
 export type ZCodeConfig = {
+  location?: string
   electron: string
   cli: string
   builtinProviderConfig: string
@@ -56,6 +57,7 @@ type Turn = {
   tools: Map<string, { name: string; input: unknown }>
   stderr: string
   failed: boolean
+  usageRequest?: string
   failure: { reason: EndReason; code?: string; error: string } | null
 }
 
@@ -79,7 +81,7 @@ export class ZCodeAdapter implements Provider {
       try { fs.chmodSync(config.sessionDb + suffix, 0o600) } catch {}
     }
     this.config = config
-    this.location = path.dirname(config.electron)
+    this.location = config.location ?? path.dirname(config.electron)
     this.watch = [config.electron, config.cli]
     this.log = log
   }
@@ -448,10 +450,11 @@ export class ZCodeAdapter implements Provider {
         turn.failure = zcodeFailure(p.error ?? p)
         return
       case 'session.updated':
+        if (p.querySource === 'main_turn' && p.type === 'model_request_started') turn.usageRequest = String(p.requestId ?? p.queryId ?? ev.eventId ?? ev.seq)
         if (p.type === 'model_request_failed' || p.statusType === 'model_request_failed' || p.kind === 'model_request_failed' || p.reason === 'model_request_failed' || p.queryStatus === 'model_request_failed' || p.model_request_failed) turn.failure = zcodeFailure(p.error ?? p.model_request_failed ?? p)
         // Report one request's context size; turn totals would trigger false context limits.
         if (p.usage && p.querySource === 'main_turn' && p.contextWindow != null) {
-          emit({ type: 'usage', inputTokens: p.usage.inputTokens ?? 0, outputTokens: p.usage.outputTokens ?? 0, cachedInputTokens: p.usage.cacheReadTokens ?? 0 })
+          emit({ type: 'usage', requestId: `${turn.turnId}:${turn.usageRequest ?? ev.eventId ?? ev.seq}`, inputTokens: p.usage.inputTokens ?? 0, outputTokens: p.usage.outputTokens ?? 0, cachedInputTokens: p.usage.cacheReadTokens ?? 0 })
         }
         return
       case 'turn.completed':
@@ -572,12 +575,36 @@ function readZCodeConfig(): Json {
 
 const bridgeInstalled = () => (readZCodeConfig()?.plugins?.dirs ?? []).includes(BRIDGE_DIR)
 
-function resolveZCodeDir(env: ProviderEnv): string | null {
+type ZCodeInstallation = { location: string; electron: string; cli: string; builtinProviderConfig: string }
+
+export function resolveZCode(env: ProviderEnv, applications = ['/Applications', path.join(HOME, 'Applications')]): ZCodeInstallation | null {
   const candidates = [process.env.BITFROST_ZCODE_DIR, env.config.dir]
   const bin = env.resolveBinary('zcode')
-  if (bin) candidates.push(path.dirname(fs.realpathSync(bin)))
-  candidates.push('/opt/ZCode')
-  for (const dir of candidates) if (dir && fs.existsSync(path.join(dir, 'resources', 'glm', 'zcode.cjs'))) return dir
+  if (bin) {
+    try { candidates.push(path.dirname(fs.realpathSync(bin))) } catch {}
+  }
+  candidates.push(...applications.map((dir) => path.join(dir, 'ZCode.app')), '/opt/ZCode')
+  for (const dir of candidates) {
+    if (!dir) continue
+    // Accept a Linux install root, a macOS .app, its Contents, or its MacOS directory.
+    const contents = path.basename(dir) === 'MacOS' ? path.dirname(dir)
+      : path.basename(dir) === 'Contents' ? dir : path.join(dir, 'Contents')
+    const layouts = [
+      { location: dir, electron: path.join(dir, 'zcode'), resources: path.join(dir, 'resources') },
+      { location: path.dirname(contents), electron: path.join(contents, 'MacOS', 'ZCode'), resources: path.join(contents, 'Resources') },
+    ]
+    for (const { location, electron, resources } of layouts) {
+      const cli = path.join(resources, 'glm', 'zcode.cjs')
+      const builtinProviderConfig = path.join(resources, 'config', 'provider', 'zcode-builtin.json')
+      try {
+        if (![electron, cli, builtinProviderConfig].every((file) => fs.statSync(file).isFile())) continue
+        fs.accessSync(electron, fs.constants.X_OK)
+        fs.accessSync(cli, fs.constants.R_OK)
+        fs.accessSync(builtinProviderConfig, fs.constants.R_OK)
+        return { location, electron, cli, builtinProviderConfig }
+      } catch {}
+    }
+  }
   return null
 }
 
@@ -595,15 +622,16 @@ export function sessionDbFor(dataDir = process.env.BITFROST_DATA_DIR || (process
 
 export const zcodeProvider: ProviderFactory = {
   id: 'zcode',
+  displayName: 'ZCode',
+  vendor: 'Z.ai',
+  detect: (env) => resolveZCode(env)?.location ?? null,
   create(env) {
-    const dir = resolveZCodeDir(env)
-    if (!dir) return null
+    const installation = resolveZCode(env)
+    if (!installation) return null
     installBridgeCopy()
     return new ZCodeAdapter(
       {
-        electron: path.join(dir, 'zcode'),
-        cli: path.join(dir, 'resources', 'glm', 'zcode.cjs'),
-        builtinProviderConfig: path.join(dir, 'resources', 'config', 'provider', 'zcode-builtin.json'),
+        ...installation,
         runDir: env.runDir,
         sessionDb: sessionDbFor(env.dataDir),
         socket: env.socket,

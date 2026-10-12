@@ -12,6 +12,8 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # Run it by hand on any branch to try the release builds; only a push to main releases.
+  workflow_dispatch:
 
 # PR runs cancel older ones. Main pushes never do, so no release gets dropped.
 concurrency:
@@ -29,14 +31,23 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
+      - name: Install migration build dependencies
+        run: sudo apt-get update && sudo apt-get install -y gnucobol libsqlite3-dev
       - name: Install Claude Code (for the plugin test kit)
         run: npm install -g @anthropic-ai/claude-code
       - run: claude plugin validate plugins/bitfrost
       - run: npm test
       - name: Check the shell scripts
-        run: shellcheck release/install.sh release/build.sh plugins/bitfrost/bin/bitfrostd
+        run: shellcheck release/*.sh plugins/bitfrost/bin/bitfrostd
       - name: Build the tarball
-        run: release/build.sh
+        run: |
+          release/build.sh --no-tui --no-migrator
+          # The installer test uses the native development build. The release
+          # job replaces it with the separately tested static migration asset.
+          version=$(node -p 'require("./plugins/bitfrost/.claude-plugin/plugin.json").version')
+          asset="bitfrost-migrate-$version-linux-x64"
+          cp plugins/bitfrost/migrations/build/bitfrost-migrate "dist/$asset"
+          (cd dist && sha256sum "$asset" >"$asset.sha256")
       - name: Install from the tarball into a throwaway home
         run: |
           home=$(mktemp -d)
@@ -51,9 +62,16 @@ jobs:
           name: tarball
           path: dist/
 
+  # The TUI ships as one binary per platform, next to the tarball.
+  tui:
+    uses: ./.github/workflows/tui.yml
+
+  migrations:
+    uses: ./.github/workflows/migrations.yml
+
   # install.sh must also work with macOS's BSD tools.
   install-macos:
-    needs: test
+    needs: [test, migrations]
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -64,6 +82,10 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: tarball
+          path: dist/
+      - uses: actions/download-artifact@v4
+        with:
+          name: migrate-darwin-universal
           path: dist/
       - name: Install into a throwaway home, then again (swaps the link)
         run: |
@@ -76,7 +98,7 @@ jobs:
           HOME=$home claude plugin list | grep -q 'bitfrost@bitfrost'
 
   release:
-    needs: [test, install-macos]
+    needs: [test, install-macos, tui, migrations]
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
     permissions:
@@ -104,6 +126,18 @@ jobs:
         with:
           name: tarball
           path: dist/
+      - uses: actions/download-artifact@v4
+        if: steps.check.outputs.new == 'true'
+        with:
+          pattern: tui-*
+          merge-multiple: true
+          path: dist/
+      - uses: actions/download-artifact@v4
+        if: steps.check.outputs.new == 'true'
+        with:
+          pattern: migrate-*
+          merge-multiple: true
+          path: dist/
       - name: Make the release
         if: steps.check.outputs.new == 'true'
         env:
@@ -116,4 +150,16 @@ jobs:
             --generate-notes \
             "dist/bitfrost-$VERSION.tar.gz" \
             "dist/bitfrost-$VERSION.tar.gz.sha256" \
-            dist/install.sh
+            dist/install.sh \
+            "dist/bitfrost-migrate-$VERSION-linux-x64" \
+            "dist/bitfrost-migrate-$VERSION-linux-x64.sha256" \
+            "dist/bitfrost-migrate-$VERSION-linux-arm64" \
+            "dist/bitfrost-migrate-$VERSION-linux-arm64.sha256" \
+            "dist/bitfrost-migrate-$VERSION-darwin-universal" \
+            "dist/bitfrost-migrate-$VERSION-darwin-universal.sha256" \
+            "dist/bitfrost-tui-$VERSION-linux-x64" \
+            "dist/bitfrost-tui-$VERSION-linux-x64.sha256" \
+            "dist/bitfrost-tui-$VERSION-linux-arm64" \
+            "dist/bitfrost-tui-$VERSION-linux-arm64.sha256" \
+            "dist/bitfrost-tui-$VERSION-darwin-universal" \
+            "dist/bitfrost-tui-$VERSION-darwin-universal.sha256"

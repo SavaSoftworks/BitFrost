@@ -1,0 +1,10 @@
+# Resources used by main.cob, checked before the database opens.
+apply-deltas.sql
+columns
+correct-v7.sql
+indexes.sql
+recount-finish.sql
+recount-start.sql
+rollups.sql
+schema.sql
+totals.sql

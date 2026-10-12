@@ -1,0 +1,251 @@
+{
+ "config": {
+  "models": {
+   "large": {
+    "provider": "opencode-go",
+    "model": "glm-5.3"
+   },
+   "small": {
+    "provider": "opencode-go",
+    "model": "glm-5.3"
+   }
+  },
+  "providers": {
+   "opencode-go": {
+    "name": "OpenCode Go",
+    "api_key": "fake-key-never-logged",
+    "models": [
+     {
+      "id": "deepseek-v4.1-flash",
+      "name": "DeepSeek V4.1 Flash",
+      "reasoning_levels": [
+       "low",
+       "high",
+       "max"
+      ],
+      "default_reasoning_effort": "high",
+      "can_reason": true
+     },
+     {
+      "id": "glm-5.3",
+      "name": "GLM-5.3",
+      "reasoning_levels": [
+       "low",
+       "high",
+       "max"
+      ],
+      "default_reasoning_effort": "high",
+      "can_reason": true
+     }
+    ]
+   }
+  }
+ },
+ "turns": [
+  [
+   {
+    "emit": {
+     "type": "message",
+     "payload": {
+      "type": "created",
+      "payload": {
+       "id": "m1",
+       "role": "assistant",
+       "session_id": "$SID",
+       "parts": [],
+       "model": "deepseek-v4.1-flash",
+       "provider": "opencode-go",
+       "created_at": 1,
+       "updated_at": 1
+      }
+     }
+    }
+   },
+   {
+    "emit": {
+     "type": "message",
+     "payload": {
+      "type": "updated",
+      "payload": {
+       "id": "m1",
+       "role": "assistant",
+       "session_id": "$SID",
+       "parts": [
+        {
+         "type": "tool_call",
+         "data": {
+          "id": "call_q",
+          "name": "question",
+          "input": "{\"questions\":[]}",
+          "finished": true
+         }
+        }
+       ],
+       "model": "deepseek-v4.1-flash",
+       "provider": "opencode-go",
+       "created_at": 1,
+       "updated_at": 1
+      }
+     }
+    }
+   },
+   {
+    "question": {
+     "id": "batch_1",
+     "session_id": "$SID",
+     "tool_call_id": "call_q",
+     "questions": [
+      {
+       "id": "color",
+       "type": "single_choice",
+       "label": "Color",
+       "question": "Pick a color",
+       "choices": [
+        {
+         "id": "r",
+         "label": "Red",
+         "description": "Warm"
+        },
+        {
+         "id": "b",
+         "label": "Blue"
+        }
+       ]
+      },
+      {
+       "id": "sure",
+       "type": "yes_no",
+       "question": "Are you sure?"
+      },
+      {
+       "id": "why",
+       "type": "free_text",
+       "question": "Why?",
+       "description": "One line is enough."
+      }
+     ]
+    },
+    "answered": [
+     {
+      "emit": {
+       "type": "message",
+       "payload": {
+        "type": "created",
+        "payload": {
+         "id": "tool_call_q",
+         "role": "tool",
+         "session_id": "$SID",
+         "parts": [
+          {
+           "type": "tool_result",
+           "data": {
+            "tool_call_id": "call_q",
+            "name": "question",
+            "content": "answered",
+            "metadata": "{}",
+            "is_error": false
+           }
+          },
+          {
+           "type": "finish",
+           "data": {
+            "reason": "stop",
+            "time": 1
+           }
+          }
+         ],
+         "model": "",
+         "provider": "",
+         "created_at": 1,
+         "updated_at": 1
+        }
+       }
+      }
+     },
+     {
+      "emit": {
+       "type": "message",
+       "payload": {
+        "type": "updated",
+        "payload": {
+         "id": "m1",
+         "role": "assistant",
+         "session_id": "$SID",
+         "parts": [
+          {
+           "type": "text",
+           "data": {
+            "text": "Thanks."
+           }
+          },
+          {
+           "type": "finish",
+           "data": {
+            "reason": "end_turn",
+            "time": 1
+           }
+          }
+         ],
+         "model": "deepseek-v4.1-flash",
+         "provider": "opencode-go",
+         "created_at": 1,
+         "updated_at": 1
+        }
+       }
+      }
+     },
+     {
+      "complete": {
+       "message_id": "m1",
+       "text": "Thanks."
+      }
+     }
+    ],
+    "cancelled": [
+     {
+      "emit": {
+       "type": "message",
+       "payload": {
+        "type": "created",
+        "payload": {
+         "id": "tool_call_q",
+         "role": "tool",
+         "session_id": "$SID",
+         "parts": [
+          {
+           "type": "tool_result",
+           "data": {
+            "tool_call_id": "call_q",
+            "name": "question",
+            "content": "cancelled",
+            "metadata": "{}",
+            "is_error": true
+           }
+          },
+          {
+           "type": "finish",
+           "data": {
+            "reason": "stop",
+            "time": 1
+           }
+          }
+         ],
+         "model": "",
+         "provider": "",
+         "created_at": 1,
+         "updated_at": 1
+        }
+       }
+      }
+     },
+     {
+      "complete": {
+       "message_id": "m1",
+       "text": "No answer."
+      }
+     }
+    ]
+   }
+  ]
+ ]
+}

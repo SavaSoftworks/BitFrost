@@ -7,15 +7,14 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { spawnSync } from 'node:child_process'
+import { execFile, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { fileURLToPath } from 'node:url'
 import type { ProviderEnv } from './provider.ts'
 import { PROVIDERS } from './providers/index.ts'
-import { claudeModelId, pendingFeatures } from './features.ts'
+import { FEATURES, EFFORTS, claudeModelId, pendingFeatures } from './features.ts'
+export { VERSION } from './version.ts'
 
 const HOME = os.homedir()
-const HERE = path.dirname(fileURLToPath(import.meta.url))
 export const RUN_DIR = process.env.BITFROST_RUNTIME_DIR || path.join(process.env.XDG_RUNTIME_DIR ?? `/tmp/bitfrost-${process.getuid!()}`, 'bitfrost')
 export const DATA_DIR = process.env.BITFROST_DATA_DIR || (process.platform === 'darwin'
   ? path.join(HOME, 'Library', 'Application Support', 'BitFrost')
@@ -26,7 +25,6 @@ export const LOCK = path.join(RUN_DIR, 'bitfrostd.lock')
 export const DATA_LOCK = path.join(DATA_DIR, 'daemon.lock')
 export const CACHE = path.join(process.env.XDG_CACHE_HOME ?? path.join(HOME, '.cache'), 'bitfrost', 'agents.json')
 export const CONFIG = path.join(process.env.XDG_CONFIG_HOME ?? path.join(HOME, '.config'), 'bitfrost', 'config.json')
-export const VERSION = JSON.parse(fs.readFileSync(path.join(HERE, '..', '.claude-plugin', 'plugin.json'), 'utf8')).version as string
 
 export function log(msg: string) {
   const line = `${new Date().toISOString()} ${msg}\n`
@@ -56,6 +54,7 @@ export type Config = {
   handback?: { model: string; effort: string | null } | null
   // Features still to be asked about (bitfrost setup).
   newSettings?: string[]
+  settingsUpToDate?: boolean
 }
 
 export function loadConfig(file = CONFIG): Config {
@@ -74,20 +73,21 @@ export function loadConfig(file = CONFIG): Config {
   const providers = { ...(cfg.providers ?? {}) }
   if (cfg.codexBin) providers.codex = { bin: cfg.codexBin, ...providers.codex }
   if (cfg.zcodeDir) providers.zcode = { dir: cfg.zcodeDir, ...providers.zcode }
+  const newSettings = problems.length ? [] : pendingFeatures(cfg).map((f) => f.id)
   return {
     allowedProfiles: (cfg.allowedProfiles ?? ['~/.claude']).map(canonical),
     providers,
     retention: { eventsDays: cfg.retention?.eventsDays ?? 30, messagesDays: cfg.retention?.messagesDays ?? 180 },
     handback: cfg.handback?.enabled === true && cfg.handback.model ? { model: claudeModelId(cfg.handback.model), effort: cfg.handback.effort ?? null } : null,
     // An invalid config is reported on its own, so it asks nothing.
-    newSettings: problems.length ? [] : pendingFeatures(cfg).map((f) => f.id),
+    newSettings,
+    settingsUpToDate: newSettings.length === 0,
     error: problems.length ? `${file} is invalid: ${problems.join('; ')}` : null,
     warnings: warnings.map((w) => `${file}: ${w}`),
   }
 }
 
-const TOP_KEYS = new Set(['allowedProfiles', 'providers', 'codexBin', 'zcodeDir', 'retention', 'handback'])
-const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max']
+const TOP_KEYS = new Set(['allowedProfiles', 'providers', 'codexBin', 'zcodeDir', 'retention', 'settingsUpToDate', ...FEATURES.map((f) => f.key)])
 const isObject = (v: unknown) => typeof v === 'object' && v !== null && !Array.isArray(v)
 const isStrings = (v: unknown) => Array.isArray(v) && v.every((x) => typeof x === 'string')
 
@@ -96,6 +96,7 @@ export function validateConfig(cfg: unknown, known: string[] = PROVIDERS.map((p)
   const warnings: string[] = []
   if (!isObject(cfg)) return { errors: ['it must be a JSON object'], warnings }
   const c = cfg as Record<string, any>
+  if ('settingsUpToDate' in c && typeof c.settingsUpToDate !== 'boolean') errors.push('settingsUpToDate must be a boolean')
   for (const key of Object.keys(c)) if (!TOP_KEYS.has(key)) warnings.push(`unknown key ${key}`)
   if ('allowedProfiles' in c && !isStrings(c.allowedProfiles)) errors.push('allowedProfiles must be a list of strings')
   for (const key of ['codexBin', 'zcodeDir']) if (key in c && typeof c[key] !== 'string') errors.push(`${key} must be a string`)
@@ -124,7 +125,7 @@ export function validateConfig(cfg: unknown, known: string[] = PROVIDERS.map((p)
         continue
       }
       if ('enabled' in entry && typeof entry.enabled !== 'boolean') errors.push(`providers.${id}.enabled must be true or false`)
-      if ('models' in entry && !isStrings(entry.models)) errors.push(`providers.${id}.models must be a list of strings`)
+      for (const key of ['models', 'disabled']) if (key in entry && !isStrings(entry[key])) errors.push(`providers.${id}.${key} must be a list of strings`)
       for (const key of ['bin', 'dir']) if (key in entry && typeof entry[key] !== 'string') errors.push(`providers.${id}.${key} must be a string`)
     }
   }
@@ -151,8 +152,7 @@ export function providerEnv(config: Config, id: string): ProviderEnv {
   }
 }
 
-// Try the login shell too, since tools may only be on its PATH.
-export function resolveBinary(name: string): string | null {
+export function pathLookup(name: string): string | null {
   for (const dir of (process.env.PATH ?? '').split(':')) {
     const p = path.join(dir, name)
     try {
@@ -160,9 +160,27 @@ export function resolveBinary(name: string): string | null {
       return p
     } catch {}
   }
-  const r = spawnSync(process.env.SHELL ?? '/bin/sh', ['-lic', `command -v ${name}`], { encoding: 'utf8', timeout: 5000 })
-  const found = (r.stdout ?? '').trim().split('\n').pop()
+  return null
+}
+
+const shellAnswer = (out: string | null | undefined) => {
+  const found = (out ?? '').trim().split('\n').pop()
   return found && found.startsWith('/') ? found : null
+}
+
+// Try the login shell too, since tools may only be on its PATH.
+export function resolveBinary(name: string): string | null {
+  const found = pathLookup(name)
+  if (found) return found
+  const r = spawnSync(process.env.SHELL ?? '/bin/sh', ['-lic', `command -v ${name}`], { encoding: 'utf8', timeout: 5000 })
+  return shellAnswer(r.stdout)
+}
+
+// The same login shell lookup, without blocking the helper.
+export function loginShellLookup(name: string): Promise<string | null> {
+  return new Promise((resolve) => {
+    execFile(process.env.SHELL ?? '/bin/sh', ['-lic', `command -v ${name}`], { encoding: 'utf8', timeout: 5000 }, (_e, stdout) => resolve(shellAnswer(stdout)))
+  })
 }
 
 // Link a file containing the PID into place so concurrent starts cannot see an empty lock.

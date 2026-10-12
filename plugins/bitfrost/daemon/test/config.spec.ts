@@ -14,6 +14,8 @@ import path from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { configKey, loadConfig, takeLock, validateConfig } from '../config.ts'
 import { buildAgents, describe } from '../registry.ts'
+import { pendingFeatures } from '../features.ts'
+const demos = pendingFeatures({ handback: {} }).map((f) => f.id)
 
 const KNOWN = ['codex', 'zcode', 'opencode']
 
@@ -45,6 +47,7 @@ test('each wrong shape is an error', () => {
     [{ providers: { codex: { bin: 42 } } }, /providers\.codex\.bin must be a string/],
     [{ providers: { zcode: { dir: ['/opt'] } } }, /providers\.zcode\.dir must be a string/],
     [{ codexBin: false }, /codexBin must be a string/],
+    [{ settingsUpToDate: 'yes' }, /settingsUpToDate must be a boolean/],
   ]
   for (const [cfg, expected] of cases) {
     const { errors } = validateConfig(cfg, KNOWN)
@@ -128,6 +131,25 @@ test('describe leaves out the alias sentence when a model has no aliases', () =>
 })
 
 
+test('a model through another app is offered, but its own app keeps the name and aliases', () => {
+  const m = (harness: string, provider: string, model: string, displayName: string) => ({ harness, harnessName: harness, provider, model, displayName, description: '', efforts: [], defaultEffort: null, isDefault: false })
+  const own = new Map([['zcode', 'Z.ai'], ['gemini', 'Google']])
+  // Listed first, as opencode and Oh My Pi come before Gemini CLI.
+  const agents = buildAgents([
+    m('opencode', 'Z.ai', 'opencode-go/glm-5.3', 'GLM-5.3'),
+    m('omp', 'Google', 'gemini-3-pro', 'Gemini 3 Pro'),
+    m('zcode', 'Z.ai', 'GLM-5.3', 'GLM-5.3'),
+    m('gemini', 'Google', 'gemini-3-pro', 'Gemini 3 Pro'),
+  ], own)
+  const [viaOpencode, viaOmp, zcode, gemini] = agents
+  assert.deepStrictEqual([viaOpencode.name, viaOmp.name, zcode.name, gemini.name], ['opencode-go-glm-5-3', 'gemini-3-pro-omp', 'glm-5-3', 'gemini-3-pro'])
+  assert.ok(zcode.aliases.includes('glm') && zcode.aliases.includes('glm5.3'), zcode.aliases.join())
+  assert.ok(gemini.aliases.includes('gemini pro') && gemini.aliases.includes('gemini3 pro'), gemini.aliases.join())
+  assert.deepStrictEqual([viaOpencode.aliases, viaOmp.aliases], [[], []])
+  const all = agents.flatMap((a) => a.aliases)
+  assert.strictEqual(new Set(all).size, all.length, 'no alias names two models')
+})
+
 test('retention defaults, overrides and invalid shapes are checked', (t) => {
   const file = path.join(tempDir(t),'config.json')
   assert.deepEqual(loadConfig(file).retention,{ eventsDays:30,messagesDays:180 })
@@ -176,7 +198,7 @@ test('loadConfig resolves each handback family, passes custom ids through, and n
     assert.equal(cfg.error, null)
     assert.deepEqual(cfg.warnings, [])
     assert.deepEqual(cfg.handback, { model: resolved, effort: 'low' })
-    assert.deepEqual(cfg.newSettings, [])
+    assert.deepEqual(cfg.newSettings, demos)
   }
   for (const effort of [undefined, null, 'medium', 'high', 'xhigh', 'max']) {
     fs.writeFileSync(file, JSON.stringify({ handback: { enabled: true, model: 'sonnet', effort } }))
@@ -186,14 +208,14 @@ test('loadConfig resolves each handback family, passes custom ids through, and n
 
 test('loadConfig reports pending handback only when its key is missing and config is valid', (t) => {
   const file = path.join(tempDir(t), 'config.json')
-  assert.deepEqual(loadConfig(file).newSettings, ['handback'])
+  assert.deepEqual(loadConfig(file).newSettings, ['handback', ...demos])
   assert.equal(loadConfig(file).handback, null)
   for (const handback of [undefined, {}, { enabled: false }, { enabled: false, model: 'opus', effort: 'max' }]) {
     fs.writeFileSync(file, JSON.stringify({ handback }))
     const cfg = loadConfig(file)
     assert.equal(cfg.error, null)
     assert.equal(cfg.handback, null)
-    assert.deepEqual(cfg.newSettings, handback === undefined ? ['handback'] : [])
+    assert.deepEqual(cfg.newSettings, handback === undefined ? ['handback', ...demos] : demos)
   }
   for (const invalid of ['{"handback":', '{"handback":{"enabled":true}}', '{"providers":{"codex":{"enabled":"no"}}}']) {
     fs.writeFileSync(file, invalid)
@@ -206,5 +228,5 @@ test('loadConfig reports pending handback only when its key is missing and confi
   const warned = loadConfig(file)
   assert.equal(warned.error, null)
   assert.deepEqual(warned.warnings, [`${file}: unknown key typo`])
-  assert.deepEqual(warned.newSettings, ['handback'])
+  assert.deepEqual(warned.newSettings, ['handback', ...demos])
 })
