@@ -7,13 +7,17 @@
 // Settings that ask before they turn on. Each feature owns one top-level config
 // key, and is asked about while that key is missing, so installs, updates,
 // --from and --force all ask exactly what a user hasn't answered yet.
+import { VERSION, newer } from './version.ts'
 
 export type Option = { value: string; label: string; hint?: string }
 export type Answers = Record<string, unknown>
 // What a question's option list or condition gets to look at.
 export type AskContext = { config: Record<string, any>; answers: Answers }
 
-type Base = { key: string; prompt: string; help?: string; when?: (answers: Answers) => boolean }
+// Ask only when an earlier answer matches; the plain form can be shown in the config screen too.
+export type When = ((answers: Answers) => boolean) | { key: string; equals: unknown }
+// label is the short name the config screen shows; states names a confirm's off and on.
+type Base = { key: string; prompt: string; label?: string; states?: [string, string]; help?: string; when?: When }
 export type Question =
   | (Base & { type: 'confirm'; default: boolean })
   | (Base & { type: 'choice'; default?: string; options: Option[] | ((ctx: AskContext) => Option[] | Promise<Option[]>) })
@@ -24,6 +28,8 @@ export type Feature = {
   since: string
   title: string
   questions: Question[]
+  // Shown in the config screen but not asked by setup.
+  more?: Question[]
   // Written with the answers, for settings that aren't asked.
   defaults?: Answers
 }
@@ -39,6 +45,8 @@ export const CLAUDE_MODELS = [
 // A family name to its model id. Anything else is taken as an id already.
 export const claudeModelId = (model: string) => CLAUDE_MODELS.find((m) => m.family === model)?.id ?? model
 
+export const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max']
+
 export const claudeModels = (): Option[] => CLAUDE_MODELS.map((m) => ({ value: m.family, label: m.label }))
 
 export const FEATURES: Feature[] = [
@@ -52,6 +60,8 @@ export const FEATURES: Feature[] = [
         key: 'enabled',
         type: 'confirm',
         prompt: 'Enable official subagent handback?',
+        label: 'Status',
+        states: ['Disabled', 'Enabled'],
         help: 'This uses an Anthropic model to process the handback, so its safety classifiers run on it.',
         default: false,
       },
@@ -59,21 +69,50 @@ export const FEATURES: Feature[] = [
         key: 'model',
         type: 'choice',
         prompt: 'Which model should handle subagent handback calls?',
-        when: (a) => a.enabled === true,
+        label: 'Model',
+        when: { key: 'enabled', equals: true },
         options: claudeModels,
         default: 'sonnet',
       },
     ],
+    more: [
+      {
+        key: 'effort',
+        type: 'choice',
+        prompt: 'Handback reasoning effort',
+        label: 'Effort',
+        help: 'How hard the handback model thinks. Low is enough for passing a report back.',
+        when: { key: 'enabled', equals: true },
+        options: EFFORTS.map((e) => ({ value: e, label: e })),
+        default: 'low',
+      },
+    ],
     defaults: { effort: 'low' },
   },
+  // Temporary, inert settings for exercising the 0.9.1 -> 0.9.2 setup flow.
+  ...[
+    { id: 'previewAppearance', title: 'Preview appearance', prompt: 'Which appearance would you prefer?', options: ['Classic', 'Compact', 'Spacious'] },
+    { id: 'previewNotifications', title: 'Preview notifications', prompt: 'Which notifications would you prefer?', options: ['None', 'Important only', 'All activity'] },
+    { id: 'previewHistory', title: 'Preview history', prompt: 'How would you prefer to group history?', options: ['By day', 'By project', 'By model'] },
+    { id: 'previewStartup', title: 'Preview startup', prompt: 'Which page would you prefer on startup?', options: ['Home', 'Models', 'Sessions'] },
+  ].map((demo): Feature => ({
+    id: demo.id, key: demo.id, since: '0.9.2', title: demo.title,
+    questions: [{ key: 'choice', type: 'choice', prompt: demo.prompt, label: demo.title,
+      help: 'Test setting only. This choice does not change BitFrost behavior.',
+      default: demo.options[0], options: demo.options.map((value) => ({ value, label: value })) }],
+  })),
 ]
 
-export const findFeature = (id: string) => FEATURES.find((f) => f.id === id)
+export const shows = (when: When | undefined, answers: Answers) =>
+  !when || (typeof when === 'function' ? when(answers) : answers[when.key] === when.equals)
+
+export const availableFeatures = (version = VERSION) => FEATURES.filter((f) => !newer(f.since, version))
+export const findFeature = (id: string) => availableFeatures().find((f) => f.id === id)
 
 // Features whose key the config doesn't have yet.
-export const pendingFeatures = (config: unknown): Feature[] => {
+export const pendingFeatures = (config: unknown, version = VERSION): Feature[] => {
   const c = config && typeof config === 'object' && !Array.isArray(config) ? (config as Record<string, unknown>) : {}
-  return FEATURES.filter((f) => !(f.key in c))
+  return availableFeatures(version).filter((f) => !(f.key in c))
 }
 
 export async function optionsFor(q: Question, ctx: AskContext): Promise<Option[]> {
@@ -90,7 +129,7 @@ export async function askFeature(
 ): Promise<Answers | null> {
   const answers: Answers = {}
   for (const q of f.questions) {
-    if (q.when && !q.when(answers)) continue
+    if (!shows(q.when, answers)) continue
     const options = await optionsFor(q, { config, answers })
     // A choice with nothing to pick leaves the feature for later.
     if (q.type === 'choice' && !options.length) return null

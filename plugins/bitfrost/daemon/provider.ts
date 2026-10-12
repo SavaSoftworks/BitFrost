@@ -55,7 +55,8 @@ export interface Provider {
   // Restart if the app has moved to another location.
   moved?(): boolean
 
-  listModels(): Promise<HarnessModel[]>
+  // force skips any cached list.
+  listModels(force?: boolean): Promise<HarnessModel[]>
   spawnSession(session: Session, req: SpawnRequest): Promise<string>
   sendInput(session: Session, text: string): Promise<'started' | 'steered' | 'queued'>
   attach?(session: Session, nativeRef: any): Promise<void>
@@ -63,6 +64,8 @@ export interface Provider {
   isBusy?(session: Session): boolean
   interrupt(session: Session): Promise<void>
   setAutoMode?(session: Session): void
+  // Take a new providers.<id>.models list without restarting the app.
+  setModels?(models: string[] | null): void
   dispose?(): void
   // Release adapter state only after the session stops.
   disposeSession?(session: Session): void
@@ -90,9 +93,14 @@ export type ProviderEnv = {
 
 export type ProviderFactory = {
   id: string
+  displayName: string
+  // Set for an app serving its own company's models, as on Provider.
+  vendor?: string
   // Enable only when config.json explicitly turns this provider on.
   optIn?: boolean
   create(env: ProviderEnv): Provider | null
+  // Where the app is, without starting it; null when it isn't installed.
+  detect?(env: ProviderEnv): string | null
   setup?(env: ProviderEnv): void
   // Undoes setup, for bitfrost uninstall, and says what it changed. dryRun only says.
   uninstall?(dryRun?: boolean): { label: string; path: string }[]

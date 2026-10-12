@@ -8,12 +8,46 @@ import os from 'node:os'
 import path from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
-import { findFeature, type Feature } from '../features.ts'
-import { NEED_TERMINAL, setupFeatures } from '../settings.ts'
+import { FEATURES, findFeature, pendingFeatures, type Feature } from '../features.ts'
+import { NEED_TERMINAL, setupFeatures as setupCurrentFeatures } from '../settings.ts'
 import { fakeTerminal } from './fake-terminal.ts'
 
+// Existing CLI question tests exercise the original 0.9.1 questions.
+const setupFeatures = (opts: Parameters<typeof setupCurrentFeatures>[0] = {}) => setupCurrentFeatures({ version: '0.9.1', ...opts })
 const handback = findFeature('handback')!
 const DAEMON = fileURLToPath(new URL('../bitfrostd.ts', import.meta.url))
+
+test('TUI install defers new questions, persists the flag, and never opens a terminal', async (t) => {
+  const config = tempConfig(t, { handback: { enabled: false } })
+  const terminal = () => { assert.fail('a deferred install must not touch /dev/tty') }
+  assert.equal(await setupCurrentFeatures({ file: config.file, version: '0.9.1', newOnly: true, defer: true, terminal }), 0)
+  assert.equal(JSON.parse(fs.readFileSync(config.file, 'utf8')).settingsUpToDate, true)
+  assert.equal(await setupCurrentFeatures({ file: config.file, version: '0.9.2', newOnly: true, defer: true, terminal }), 3)
+  const pending = fs.readFileSync(config.file, 'utf8')
+  assert.equal(JSON.parse(pending).settingsUpToDate, false)
+  assert.equal(pendingFeatures(JSON.parse(pending)).length, 4)
+  assert.equal(await setupCurrentFeatures({ file: config.file, newOnly: true, defer: true, terminal }), 3)
+  assert.equal(fs.readFileSync(config.file, 'utf8'), pending)
+})
+
+test('CLI can complete deferred questions and marks settings up to date', { timeout: 2000 }, async (t) => {
+  const config = tempConfig(t, { handback: { enabled: false } })
+  const fake = fakeTerminal(t, ['\r', '\r', '\r', '\r'])
+  assert.equal(await setupCurrentFeatures({ file: config.file, terminal: () => fake.terminal }), 0)
+  const raw = JSON.parse(fs.readFileSync(config.file, 'utf8'))
+  assert.equal(raw.settingsUpToDate, true)
+  assert.deepEqual(pendingFeatures(raw), [])
+  assert.equal(raw.previewAppearance.choice, 'Classic')
+})
+
+test('explicit setup succeeds for that feature while other new settings stay pending', { timeout: 2000 }, async (t) => {
+  const config = tempConfig(t, { handback: { enabled: false } })
+  const fake = fakeTerminal(t, ['n\r'])
+  assert.equal(await setupCurrentFeatures({ features: [handback], file: config.file, terminal: () => fake.terminal }), 0)
+  const raw = JSON.parse(fs.readFileSync(config.file, 'utf8'))
+  assert.equal(raw.settingsUpToDate, false)
+  assert.equal(pendingFeatures(raw).length, 4)
+})
 
 function tempConfig(t: TestContext, contents: string | Record<string, unknown> = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bitfrost-settings-test-'))
@@ -21,8 +55,8 @@ function tempConfig(t: TestContext, contents: string | Record<string, unknown> =
   t.mock.method(console, 'log', () => {})
   t.mock.method(console, 'error', () => {})
   const file = path.join(dir, 'config.json')
-  fs.writeFileSync(file, typeof contents === 'string' ? contents : JSON.stringify(contents), { mode: 0o600 })
-  return { dir, file, read: () => JSON.parse(fs.readFileSync(file, 'utf8')) }
+  fs.writeFileSync(file, typeof contents === 'string' ? contents : JSON.stringify({ ...contents, settingsUpToDate: pendingFeatures(contents, '0.9.1').length === 0 }), { mode: 0o600 })
+  return { dir, file, read: () => { const { settingsUpToDate, ...answers } = JSON.parse(fs.readFileSync(file, 'utf8')); return answers } }
 }
 
 test('setupFeatures declines once, skips the model, and --new is quiet thereafter', { timeout: 2000 }, async (t) => {
@@ -138,7 +172,7 @@ test('a feature with no choice options remains pending and saves no partial answ
   const config = tempConfig(t)
   const feature: Feature = { ...handback, questions: handback.questions.map((q) => q.type === 'choice' ? { ...q, options: [] } : q) }
   const fake = fakeTerminal(t, ['y\r'])
-  assert.equal(await setupFeatures({ features: [feature], file: config.file, terminal: () => fake.terminal }), 0)
+  assert.equal(await setupFeatures({ features: [feature], file: config.file, terminal: () => fake.terminal }), 3)
   assert.deepEqual(config.read(), {})
   assert.equal(fake.closed(), 1)
 })
@@ -148,7 +182,7 @@ test('setupFeatures creates a missing config and parent directories with private
   const file = path.join(config.dir, 'nested', 'bitfrost', 'config.json')
   const fake = fakeTerminal(t, ['\r'])
   assert.equal(await setupFeatures({ file, terminal: () => fake.terminal }), 0)
-  assert.deepEqual(JSON.parse(fs.readFileSync(file, 'utf8')), { handback: { enabled: false, effort: 'low' } })
+  assert.deepEqual(JSON.parse(fs.readFileSync(file, 'utf8')), { handback: { enabled: false, effort: 'low' }, settingsUpToDate: true })
   assert.equal(fs.statSync(file).mode & 0o777, 0o600)
 })
 
@@ -169,7 +203,7 @@ test('CLI setup --new exits 3 in a detached child with no terminal and a tempora
   assert.ifError(result.error)
   assert.equal(result.signal, null)
   assert.equal(result.status, 3)
-  assert.ok(!fs.existsSync(path.join(config.dir, 'config', 'bitfrost', 'config.json')))
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(config.dir, 'config', 'bitfrost', 'config.json'), 'utf8')), { settingsUpToDate: false })
 })
 
 test('CLI setup alone handles pending settings and setup handback re-asks an answered feature', (t) => {
@@ -179,7 +213,7 @@ test('CLI setup alone handles pending settings and setup handback re-asks an ans
   assert.equal(pending.status, 3)
   const file = path.join(config.dir, 'config', 'bitfrost', 'config.json')
   fs.mkdirSync(path.dirname(file), { recursive: true })
-  const original = '{"handback":{"enabled":false}}\n'
+  const original = JSON.stringify({ ...Object.fromEntries(FEATURES.map((f) => [f.key, {}])), handback: { enabled: false }, settingsUpToDate: true }) + '\n'
   fs.writeFileSync(file, original)
   for (const [args, expected] of [[['setup'], 0], [['setup', '--new'], 0], [['setup', 'handback'], 3]] as [string[], number][]) {
     const result = cli(config.dir, args)

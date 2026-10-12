@@ -1,0 +1,201 @@
+{
+ "config": {
+  "models": {
+   "large": {
+    "provider": "opencode-go",
+    "model": "glm-5.3"
+   },
+   "small": {
+    "provider": "opencode-go",
+    "model": "glm-5.3"
+   }
+  },
+  "providers": {
+   "opencode-go": {
+    "name": "OpenCode Go",
+    "api_key": "fake-key-never-logged",
+    "models": [
+     {
+      "id": "deepseek-v4.1-flash",
+      "name": "DeepSeek V4.1 Flash",
+      "reasoning_levels": [
+       "low",
+       "high",
+       "max"
+      ],
+      "default_reasoning_effort": "high",
+      "can_reason": true
+     },
+     {
+      "id": "glm-5.3",
+      "name": "GLM-5.3",
+      "reasoning_levels": [
+       "low",
+       "high",
+       "max"
+      ],
+      "default_reasoning_effort": "high",
+      "can_reason": true
+     }
+    ]
+   }
+  }
+ },
+ "sessions": {
+  "ses_1": {
+   "id": "ses_1",
+   "parent_session_id": "",
+   "title": "BitFrost task",
+   "prompt_tokens": 900,
+   "completion_tokens": 30,
+   "todos": []
+  }
+ },
+ "turns": [
+  [
+   {
+    "emit": {
+     "type": "message",
+     "payload": {
+      "type": "created",
+      "payload": {
+       "id": "m1",
+       "role": "assistant",
+       "session_id": "$SID",
+       "parts": [],
+       "model": "deepseek-v4.1-flash",
+       "provider": "opencode-go",
+       "created_at": 1,
+       "updated_at": 1
+      }
+     }
+    }
+   },
+   {
+    "emit": {
+     "type": "message",
+     "payload": {
+      "type": "updated",
+      "payload": {
+       "id": "m1",
+       "role": "assistant",
+       "session_id": "$SID",
+       "parts": [
+        {
+         "type": "text",
+         "data": {
+          "text": "Starting"
+         }
+        }
+       ],
+       "model": "deepseek-v4.1-flash",
+       "provider": "opencode-go",
+       "created_at": 1,
+       "updated_at": 1
+      }
+     }
+    }
+   },
+   {
+    "sleep": 50
+   },
+   {
+    "crash": 3
+   }
+  ]
+ ],
+ "afterCrash": [
+  [
+   {
+    "emit": {
+     "type": "message",
+     "payload": {
+      "type": "created",
+      "payload": {
+       "id": "m9",
+       "role": "assistant",
+       "session_id": "$SID",
+       "parts": [],
+       "model": "deepseek-v4.1-flash",
+       "provider": "opencode-go",
+       "created_at": 1,
+       "updated_at": 1
+      }
+     }
+    }
+   },
+   {
+    "emit": {
+     "type": "message",
+     "payload": {
+      "type": "updated",
+      "payload": {
+       "id": "m9",
+       "role": "assistant",
+       "session_id": "$SID",
+       "parts": [
+        {
+         "type": "text",
+         "data": {
+          "text": "Back."
+         }
+        },
+        {
+         "type": "finish",
+         "data": {
+          "reason": "end_turn",
+          "time": 1
+         }
+        }
+       ],
+       "model": "deepseek-v4.1-flash",
+       "provider": "opencode-go",
+       "created_at": 1,
+       "updated_at": 1
+      }
+     }
+    }
+   },
+   {
+    "emit": {
+     "type": "session",
+     "payload": {
+      "type": "updated",
+      "payload": {
+       "id": "$SID",
+       "parent_session_id": "",
+       "title": "BitFrost task",
+       "message_count": 2,
+       "prompt_tokens": 900,
+       "completion_tokens": 30,
+       "cost": 0
+      }
+     }
+    }
+   },
+   {
+    "emit": {
+     "type": "session",
+     "payload": {
+      "type": "updated",
+      "payload": {
+       "id": "$SID",
+       "parent_session_id": "",
+       "title": "BitFrost task",
+       "message_count": 2,
+       "prompt_tokens": 1000,
+       "completion_tokens": 8,
+       "cost": 0
+      }
+     }
+    }
+   },
+   {
+    "complete": {
+     "message_id": "m9",
+     "text": "Back."
+    }
+   }
+  ]
+ ]
+}

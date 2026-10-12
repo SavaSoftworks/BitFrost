@@ -4,80 +4,30 @@
 # BitFrost is free software: you can share and change it under the GNU General
 # Public License, version 3 only. It comes with no warranty. See LICENSE.
 
-# Tests every PR and push to main. Releases when plugin.json has a new version.
+# Reuses PR validation on main pushes. Releases when plugin.json has a new version.
 name: release
 
 on:
   push:
     branches: [main]
-  pull_request:
-    branches: [main]
+  # Run it by hand on any branch to try the release builds; only a push to main releases.
+  workflow_dispatch:
 
-# PR runs cancel older ones. Main pushes never do, so no release gets dropped.
+# Main pushes never cancel older runs, so no release gets dropped.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: release-${{ github.sha }}
+  cancel-in-progress: false
 
 permissions:
   contents: read
 
 jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-      - name: Install Claude Code (for the plugin test kit)
-        run: npm install -g @anthropic-ai/claude-code
-      - run: claude plugin validate plugins/bitfrost
-      - run: npm test
-      - name: Check the shell scripts
-        run: shellcheck release/install.sh release/build.sh plugins/bitfrost/bin/bitfrostd
-      - name: Build the tarball
-        run: release/build.sh
-      - name: Install from the tarball into a throwaway home
-        run: |
-          home=$(mktemp -d)
-          version=$(node -p 'require("./plugins/bitfrost/.claude-plugin/plugin.json").version')
-          grep -qx "RELEASE=$version" dist/install.sh
-          HOME=$home sh dist/install.sh --from "dist/bitfrost-$version.tar.gz"
-          test -x "$home/.local/bin/bitfrost"
-          HOME=$home "$home/.local/bin/bitfrost" socket
-          HOME=$home claude plugin list | grep -q 'bitfrost@bitfrost'
-      - uses: actions/upload-artifact@v4
-        with:
-          name: tarball
-          path: dist/
-
-  # install.sh must also work with macOS's BSD tools.
-  install-macos:
-    needs: test
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-      - run: npm install -g @anthropic-ai/claude-code
-      - uses: actions/download-artifact@v4
-        with:
-          name: tarball
-          path: dist/
-      - name: Install into a throwaway home, then again (swaps the link)
-        run: |
-          home=$(mktemp -d)
-          version=$(node -p 'require("./plugins/bitfrost/.claude-plugin/plugin.json").version')
-          HOME=$home sh dist/install.sh --from "dist/bitfrost-$version.tar.gz"
-          HOME=$home sh dist/install.sh --from "dist/bitfrost-$version.tar.gz"
-          test -L "$home/.local/share/bitfrost/current"
-          HOME=$home "$home/.local/bin/bitfrost" socket
-          HOME=$home claude plugin list | grep -q 'bitfrost@bitfrost'
+  checks:
+    uses: ./.github/workflows/tests.yml
 
   release:
-    needs: [test, install-macos]
-    if: github.event_name == 'push'
+    needs: checks
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -104,6 +54,18 @@ jobs:
         with:
           name: tarball
           path: dist/
+      - uses: actions/download-artifact@v4
+        if: steps.check.outputs.new == 'true'
+        with:
+          pattern: tui-*
+          merge-multiple: true
+          path: dist/
+      - uses: actions/download-artifact@v4
+        if: steps.check.outputs.new == 'true'
+        with:
+          pattern: migrate-*
+          merge-multiple: true
+          path: dist/
       - name: Make the release
         if: steps.check.outputs.new == 'true'
         env:
@@ -116,4 +78,16 @@ jobs:
             --generate-notes \
             "dist/bitfrost-$VERSION.tar.gz" \
             "dist/bitfrost-$VERSION.tar.gz.sha256" \
-            dist/install.sh
+            dist/install.sh \
+            "dist/bitfrost-migrate-$VERSION-linux-x64" \
+            "dist/bitfrost-migrate-$VERSION-linux-x64.sha256" \
+            "dist/bitfrost-migrate-$VERSION-linux-arm64" \
+            "dist/bitfrost-migrate-$VERSION-linux-arm64.sha256" \
+            "dist/bitfrost-migrate-$VERSION-darwin-universal" \
+            "dist/bitfrost-migrate-$VERSION-darwin-universal.sha256" \
+            "dist/bitfrost-tui-$VERSION-linux-x64" \
+            "dist/bitfrost-tui-$VERSION-linux-x64.sha256" \
+            "dist/bitfrost-tui-$VERSION-linux-arm64" \
+            "dist/bitfrost-tui-$VERSION-linux-arm64.sha256" \
+            "dist/bitfrost-tui-$VERSION-darwin-universal" \
+            "dist/bitfrost-tui-$VERSION-darwin-universal.sha256"

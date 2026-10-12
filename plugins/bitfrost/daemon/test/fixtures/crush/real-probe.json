@@ -1,0 +1,842 @@
+{
+ "config": {
+  "models": {
+   "large": {
+    "provider": "opencode-go",
+    "model": "glm-5.3"
+   },
+   "small": {
+    "provider": "opencode-go",
+    "model": "glm-5.3"
+   }
+  },
+  "providers": {
+   "opencode-go": {
+    "name": "OpenCode Go",
+    "api_key": "fake-key-never-logged",
+    "models": [
+     {
+      "id": "deepseek-v4.1-flash",
+      "name": "DeepSeek V4.1 Flash",
+      "reasoning_levels": [
+       "low",
+       "high",
+       "max"
+      ],
+      "default_reasoning_effort": "high",
+      "can_reason": true
+     },
+     {
+      "id": "glm-5.3",
+      "name": "GLM-5.3",
+      "reasoning_levels": [
+       "low",
+       "high",
+       "max"
+      ],
+      "default_reasoning_effort": "high",
+      "can_reason": true
+     }
+    ]
+   }
+  }
+ },
+ "turns": [
+  [
+   {
+    "emit": {
+     "type": "message",
+     "payload": {
+      "type": "created",
+      "payload": {
+       "parts": [
+        {
+         "type": "text",
+         "data": {
+          "text": "Reply with exactly the word ok and nothing else."
+         }
+        },
+        {
+         "type": "finish",
+         "data": {
+          "reason": "stop",
+          "time": 0
+         }
+        }
+       ],
+       "id": "dda2c010-3190-4053-9054-9b0d22aefbb9",
+       "role": "user",
+       "session_id": "$SID",
+       "model": "",
+       "provider": "",
+       "created_at": 1791577221,
+       "updated_at": 1791577221
+      }
+     }
+    }
+   },
+   {
+    "emit": {
+     "type": "message",
+     "payload": {
+      "type": "created",
+      "payload": {
+       "parts": [],
+       "id": "9bb01cf8-c0cb-4326-9cbc-8f3e25f932cf",
+       "role": "assistant",
+       "session_id": "$SID",
+       "model": "deepseek-v4.1-flash",
+       "provider": "opencode-go",
+       "created_at": 1791577221,
+       "updated_at": 1791577221
+      }
+     }
+    }
+   },
+   {
+    "emit": {
+     "type": "session",
+     "payload": {
+      "type": "updated",
+      "payload": {
+       "id": "$SID",
+       "parent_session_id": "",
+       "title": "bitfrost probe",
+       "message_count": 2,
+       "prompt_tokens": 18412,
+       "completion_tokens": 3,
+       "summary_message_id": "",
+       "cost": 0.0027636,
+       "created_at": 1791577221,
+       "updated_at": 1791577221,
+       "is_busy": false,
+       "attached_clients": 0
+      }
+     }
+    }
+   },
+   {
+    "emit": {
+     "type": "message",
+     "payload": {
+      "type": "updated",
+      "payload": {
+       "parts": [
+        {
+         "type": "text",
+         "data": {
+          "text": "ok"
+         }
+        },
+        {
+         "type": "finish",
+         "data": {
+          "reason": "end_turn",
+          "time": 1791577222
+         }
+        }
+       ],
+       "id": "9bb01cf8-c0cb-4326-9cbc-8f3e25f932cf",
+       "role": "assistant",
+       "session_id": "$SID",
+       "model": "deepseek-v4.1-flash",
+       "provider": "opencode-go",
+       "created_at": 1791577221,
+       "updated_at": 1791577221
+      }
+     }
+    }
+   },
+   {
+    "emit": {
+     "type": "run_complete",
+     "payload": {
+      "type": "updated",
+      "payload": {
+       "session_id": "$SID",
+       "run_id": "$RUN",
+       "message_id": "9bb01cf8-c0cb-4326-9cbc-8f3e25f932cf",
+       "text": "ok"
+      }
+     }
+    }
+   },
+   {
+    "emit": {
+     "type": "agent_event",
+     "payload": {
+      "type": "created",
+      "payload": {
+       "type": "agent_finished",
+       "message": {
+        "parts": [],
+        "id": "",
+        "role": "",
+        "session_id": "",
+        "model": "",
+        "provider": "",
+        "created_at": 0,
+        "updated_at": 0
+       },
+       "session_id": "$SID",
+       "session_title": "bitfrost probe"
+      }
+     }
+    }
+   }
+  ],
+  [
+   {
+    "emit": {
+     "type": "message",
+     "payload": {
+      "type": "created",
+      "payload": {
+       "parts": [
+        {
+         "type": "text",
+         "data": {
+          "text": "Use your bash tool twice, one command per call, in this order: first run exactly `echo hi > probe1.txt`, then run exactly `touch probe2.txt`. Then reply done."
+         }
+        },
+        {
+         "type": "finish",
+         "data": {
+          "reason": "stop",
+          "time": 0
+         }
+        }
+       ],
+       "id": "13e13c61-4c12-4ee0-9227-a51ade4e970a",
+       "role": "user",
+       "session_id": "$SID",
+       "model": "",
+       "provider": "",
+       "created_at": 1791577222,
+       "updated_at": 1791577222
+      }
+     }
+    }
+   },
+   {
+    "emit": {
+     "type": "message",
+     "payload": {
+      "type": "created",
+      "payload": {
+       "parts": [],
+       "id": "d82add91-d828-44c6-9827-13cbd414f6ef",
+       "role": "assistant",
+       "session_id": "$SID",
+       "model": "deepseek-v4.1-flash",
+       "provider": "opencode-go",
+       "created_at": 1791577222,
+       "updated_at": 1791577222
+      }
+     }
+    }
+   },
+   {
+    "emit": {
+     "type": "message",
+     "payload": {
+      "type": "updated",
+      "payload": {
+       "parts": [
+        {
+         "type": "reasoning",
+         "data": {
+          "thinking": "Let",
+          "signature": "",
+          "started_at": 1791577224
+         }
+        }
+       ],
+       "id": "d82add91-d828-44c6-9827-13cbd414f6ef",
+       "role": "assistant",
+       "session_id": "$SID",
+       "model": "deepseek-v4.1-flash",
+       "provider": "opencode-go",
+       "created_at": 1791577222,
+       "updated_at": 1791577222
+      }
+     }
+    }
+   },
+   {
+    "emit": {
+     "type": "message",
+     "payload": {
+      "type": "updated",
+      "payload": {
+       "parts": [
+        {
+         "type": "reasoning",
+         "data": {
+          "thinking": "Let me run two",
+          "signature": "",
+          "started_at": 1791577224
+         }
+        }
+       ],
+       "id": "d82add91-d828-44c6-9827-13cbd414f6ef",
+       "role": "assistant",
+       "session_id": "$SID",
+       "model": "deepseek-v4.1-flash",
+       "provider": "opencode-go",
+       "created_at": 1791577222,
+       "updated_at": 1791577222
+      }
+     }
+    }
+   },
+   {
+    "emit": {
+     "type": "message",
+     "payload": {
+      "type": "updated",
+      "payload": {
+       "parts": [
+        {
+         "type": "reasoning",
+         "data": {
+          "thinking": "Let me run two separate bash calls in one message",
+          "signature": "",
+          "started_at": 1791577224
+         }
+        }
+       ],
+       "id": "d82add91-d828-44c6-9827-13cbd414f6ef",
+       "role": "assistant",
+       "session_id": "$SID",
+       "model": "deepseek-v4.1-flash",
+       "provider": "opencode-go",
+       "created_at": 1791577222,
+       "updated_at": 1791577222
+      }
+     }
+    }
+   },
+   {
+    "emit": {
+     "type": "message",
+     "payload": {
+      "type": "updated",
+      "payload": {
+       "parts": [
+        {
+         "type": "reasoning",
+         "data": {
+          "thinking": "Let me run two separate bash calls in one message.",
+          "signature": "",
+          "started_at": 1791577224
+         }
+        }
+       ],
+       "id": "d82add91-d828-44c6-9827-13cbd414f6ef",
+       "role": "assistant",
+       "session_id": "$SID",
+       "model": "deepseek-v4.1-flash",
+       "provider": "opencode-go",
+       "created_at": 1791577222,
+       "updated_at": 1791577222
+      }
+     }
+    }
+   },
+   {
+    "emit": {
+     "type": "session",
+     "payload": {
+      "type": "updated",
+      "payload": {
+       "id": "$SID",
+       "parent_session_id": "",
+       "title": "Instruction to reply only ok",
+       "message_count": 4,
+       "prompt_tokens": 18582,
+       "completion_tokens": 567,
+       "summary_message_id": "",
+       "cost": 0.0031275,
+       "created_at": 1791577221,
+       "updated_at": 1791577225,
+       "is_busy": false,
+       "attached_clients": 0
+      }
+     }
+    }
+   },
+   {
+    "emit": {
+     "type": "message",
+     "payload": {
+      "type": "updated",
+      "payload": {
+       "parts": [
+        {
+         "type": "reasoning",
+         "data": {
+          "thinking": "Let me run two separate bash calls in one message.",
+          "signature": "",
+          "started_at": 1791577224,
+          "finished_at": 1791577225
+         }
+        }
+       ],
+       "id": "d82add91-d828-44c6-9827-13cbd414f6ef",
+       "role": "assistant",
+       "session_id": "$SID",
+       "model": "deepseek-v4.1-flash",
+       "provider": "opencode-go",
+       "created_at": 1791577222,
+       "updated_at": 1791577222
+      }
+     }
+    }
+   },
+   {
+    "emit": {
+     "type": "message",
+     "payload": {
+      "type": "updated",
+      "payload": {
+       "parts": [
+        {
+         "type": "reasoning",
+         "data": {
+          "thinking": "Let me run two separate bash calls in one message.",
+          "signature": "",
+          "started_at": 1791577224,
+          "finished_at": 1791577225
+         }
+        },
+        {
+         "type": "tool_call",
+         "data": {
+          "id": "call_7b61ca853cd44e87b659fc34",
+          "name": "bash",
+          "input": ""
+         }
+        }
+       ],
+       "id": "d82add91-d828-44c6-9827-13cbd414f6ef",
+       "role": "assistant",
+       "session_id": "$SID",
+       "model": "deepseek-v4.1-flash",
+       "provider": "opencode-go",
+       "created_at": 1791577222,
+       "updated_at": 1791577222
+      }
+     }
+    }
+   },
+   {
+    "emit": {
+     "type": "message",
+     "payload": {
+      "type": "updated",
+      "payload": {
+       "parts": [
+        {
+         "type": "reasoning",
+         "data": {
+          "thinking": "Let me run two separate bash calls in one message.",
+          "signature": "",
+          "started_at": 1791577224,
+          "finished_at": 1791577225
+         }
+        },
+        {
+         "type": "tool_call",
+         "data": {
+          "id": "call_7b61ca853cd44e87b659fc34",
+          "name": "bash",
+          "input": ""
+         }
+        },
+        {
+         "type": "tool_call",
+         "data": {
+          "id": "call_081b6a55407c43a0b1a737ed",
+          "name": "bash",
+          "input": ""
+         }
+        }
+       ],
+       "id": "d82add91-d828-44c6-9827-13cbd414f6ef",
+       "role": "assistant",
+       "session_id": "$SID",
+       "model": "deepseek-v4.1-flash",
+       "provider": "opencode-go",
+       "created_at": 1791577222,
+       "updated_at": 1791577222
+      }
+     }
+    }
+   },
+   {
+    "emit": {
+     "type": "message",
+     "payload": {
+      "type": "updated",
+      "payload": {
+       "parts": [
+        {
+         "type": "reasoning",
+         "data": {
+          "thinking": "Let me run two separate bash calls in one message.",
+          "signature": "",
+          "started_at": 1791577224,
+          "finished_at": 1791577225
+         }
+        },
+        {
+         "type": "tool_call",
+         "data": {
+          "id": "call_7b61ca853cd44e87b659fc34",
+          "name": "bash",
+          "input": "{\"description\":\"Write hi to probe1.txt\",\"command\":\"echo hi > probe1.txt\"}",
+          "finished": true
+         }
+        },
+        {
+         "type": "tool_call",
+         "data": {
+          "id": "call_081b6a55407c43a0b1a737ed",
+          "name": "bash",
+          "input": ""
+         }
+        }
+       ],
+       "id": "d82add91-d828-44c6-9827-13cbd414f6ef",
+       "role": "assistant",
+       "session_id": "$SID",
+       "model": "deepseek-v4.1-flash",
+       "provider": "opencode-go",
+       "created_at": 1791577222,
+       "updated_at": 1791577222
+      }
+     }
+    }
+   },
+   {
+    "emit": {
+     "type": "message",
+     "payload": {
+      "type": "updated",
+      "payload": {
+       "parts": [
+        {
+         "type": "reasoning",
+         "data": {
+          "thinking": "Let me run two separate bash calls in one message.",
+          "signature": "",
+          "started_at": 1791577224,
+          "finished_at": 1791577225
+         }
+        },
+        {
+         "type": "tool_call",
+         "data": {
+          "id": "call_7b61ca853cd44e87b659fc34",
+          "name": "bash",
+          "input": "{\"description\":\"Write hi to probe1.txt\",\"command\":\"echo hi > probe1.txt\"}",
+          "finished": true
+         }
+        },
+        {
+         "type": "tool_call",
+         "data": {
+          "id": "call_081b6a55407c43a0b1a737ed",
+          "name": "bash",
+          "input": "{\"description\":\"Create probe2.txt\",\"command\":\"touch probe2.txt\"}",
+          "finished": true
+         }
+        }
+       ],
+       "id": "d82add91-d828-44c6-9827-13cbd414f6ef",
+       "role": "assistant",
+       "session_id": "$SID",
+       "model": "deepseek-v4.1-flash",
+       "provider": "opencode-go",
+       "created_at": 1791577222,
+       "updated_at": 1791577222
+      }
+     }
+    }
+   },
+   {
+    "hook": {
+     "tool_name": "bash",
+     "tool_input": {
+      "description": "Write hi to probe1.txt",
+      "command": "echo hi > probe1.txt"
+     }
+    },
+    "deny": [
+     {
+      "emit": {
+       "type": "message",
+       "payload": {
+        "type": "created",
+        "payload": {
+         "parts": [
+          {
+           "type": "tool_result",
+           "data": {
+            "tool_call_id": "call_7b61ca853cd44e87b659fc34",
+            "name": "bash",
+            "content": "Tool call blocked by hook. Reason: $REASON",
+            "metadata": "{\"hook\":{\"hook_count\":1,\"decision\":\"deny\",\"reason\":\"$REASON\",\"hooks\":[{\"name\":\"bitfrost\",\"matcher\":\"^bash$\",\"decision\":\"deny\",\"reason\":\"$REASON\"}]}}",
+            "is_error": true
+           }
+          },
+          {
+           "type": "finish",
+           "data": {
+            "reason": "stop",
+            "time": 0
+           }
+          }
+         ],
+         "id": "aed3b0b0-5903-46bb-86f1-b667d18cb8ee",
+         "role": "tool",
+         "session_id": "$SID",
+         "model": "",
+         "provider": "",
+         "created_at": 1791577227,
+         "updated_at": 1791577227
+        }
+       }
+      }
+     }
+    ],
+    "allow": [
+     {
+      "emit": {
+       "type": "message",
+       "payload": {
+        "type": "created",
+        "payload": {
+         "parts": [
+          {
+           "type": "tool_result",
+           "data": {
+            "tool_call_id": "call_7b61ca853cd44e87b659fc34",
+            "name": "bash",
+            "content": "Tool call blocked by hook. Reason: $REASON",
+            "metadata": "{\"hook\":{\"hook_count\":1,\"decision\":\"deny\",\"reason\":\"$REASON\",\"hooks\":[{\"name\":\"bitfrost\",\"matcher\":\"^bash$\",\"decision\":\"deny\",\"reason\":\"$REASON\"}]}}",
+            "is_error": true
+           }
+          },
+          {
+           "type": "finish",
+           "data": {
+            "reason": "stop",
+            "time": 0
+           }
+          }
+         ],
+         "id": "aed3b0b0-5903-46bb-86f1-b667d18cb8ee",
+         "role": "tool",
+         "session_id": "$SID",
+         "model": "",
+         "provider": "",
+         "created_at": 1791577227,
+         "updated_at": 1791577227
+        }
+       }
+      }
+     }
+    ]
+   },
+   {
+    "emit": {
+     "type": "permission_notification",
+     "payload": {
+      "type": "created",
+      "payload": {
+       "tool_call_id": "call_081b6a55407c43a0b1a737ed",
+       "granted": false,
+       "denied": false
+      }
+     }
+    }
+   },
+   {
+    "permission": {
+     "id": "3f7710be-9a29-4a3c-b36e-d5a36c803c3e",
+     "session_id": "$SID",
+     "tool_call_id": "call_081b6a55407c43a0b1a737ed",
+     "tool_name": "bash",
+     "description": "Execute command: touch probe2.txt",
+     "action": "execute",
+     "params": {
+      "description": "Create probe2.txt",
+      "command": "touch probe2.txt",
+      "working_dir": "",
+      "run_in_background": false,
+      "auto_background_after": 0
+     },
+     "path": "$CWD"
+    },
+    "deny": [
+     {
+      "emit": {
+       "type": "message",
+       "payload": {
+        "type": "created",
+        "payload": {
+         "parts": [
+          {
+           "type": "tool_result",
+           "data": {
+            "tool_call_id": "call_081b6a55407c43a0b1a737ed",
+            "name": "bash",
+            "content": "User denied permission",
+            "metadata": "{\"hook\":{\"hook_count\":1,\"decision\":\"none\",\"hooks\":[{\"name\":\"bitfrost\",\"matcher\":\"^bash$\",\"decision\":\"none\"}]}}",
+            "is_error": true
+           }
+          },
+          {
+           "type": "finish",
+           "data": {
+            "reason": "stop",
+            "time": 0
+           }
+          }
+         ],
+         "id": "1e5d2375-d389-4f3f-86ae-270570f412d9",
+         "role": "tool",
+         "session_id": "$SID",
+         "model": "",
+         "provider": "",
+         "created_at": 1791577227,
+         "updated_at": 1791577227
+        }
+       }
+      }
+     },
+     {
+      "emit": {
+       "type": "session",
+       "payload": {
+        "type": "updated",
+        "payload": {
+         "id": "$SID",
+         "parent_session_id": "",
+         "title": "Instruction to reply only ok",
+         "message_count": 6,
+         "prompt_tokens": 18457,
+         "completion_tokens": 124,
+         "summary_message_id": "",
+         "cost": 0.00322485,
+         "created_at": 1791577221,
+         "updated_at": 1791577227,
+         "is_busy": false,
+         "attached_clients": 0
+        }
+       }
+      }
+     },
+     {
+      "emit": {
+       "type": "run_complete",
+       "payload": {
+        "type": "updated",
+        "payload": {
+         "session_id": "$SID",
+         "run_id": "$RUN",
+         "message_id": "d82add91-d828-44c6-9827-13cbd414f6ef"
+        }
+       }
+      }
+     },
+     {
+      "emit": {
+       "type": "message",
+       "payload": {
+        "type": "updated",
+        "payload": {
+         "parts": [
+          {
+           "type": "reasoning",
+           "data": {
+            "thinking": "Let me run two separate bash calls in one message.",
+            "signature": "",
+            "started_at": 1791577224,
+            "finished_at": 1791577225
+           }
+          },
+          {
+           "type": "tool_call",
+           "data": {
+            "id": "call_7b61ca853cd44e87b659fc34",
+            "name": "bash",
+            "input": "{\"description\":\"Write hi to probe1.txt\",\"command\":\"echo hi > probe1.txt\"}",
+            "finished": true
+           }
+          },
+          {
+           "type": "tool_call",
+           "data": {
+            "id": "call_081b6a55407c43a0b1a737ed",
+            "name": "bash",
+            "input": "{\"description\":\"Create probe2.txt\",\"command\":\"touch probe2.txt\"}",
+            "finished": true
+           }
+          },
+          {
+           "type": "finish",
+           "data": {
+            "reason": "end_turn",
+            "time": 1791577227
+           }
+          }
+         ],
+         "id": "d82add91-d828-44c6-9827-13cbd414f6ef",
+         "role": "assistant",
+         "session_id": "$SID",
+         "model": "deepseek-v4.1-flash",
+         "provider": "opencode-go",
+         "created_at": 1791577222,
+         "updated_at": 1791577222
+        }
+       }
+      }
+     },
+     {
+      "emit": {
+       "type": "agent_event",
+       "payload": {
+        "type": "created",
+        "payload": {
+         "type": "agent_finished",
+         "message": {
+          "parts": [],
+          "id": "",
+          "role": "",
+          "session_id": "",
+          "model": "",
+          "provider": "",
+          "created_at": 0,
+          "updated_at": 0
+         },
+         "session_id": "$SID",
+         "session_title": "Instruction to reply only ok"
+        }
+       }
+      }
+     }
+    ],
+    "allow": [
+     {
+      "complete": {
+       "text": "allowed"
+      }
+     }
+    ]
+   }
+  ]
+ ]
+}

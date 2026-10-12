@@ -7,7 +7,11 @@
 import fs from 'node:fs'
 import { execFileSync } from 'node:child_process'
 
-export type ProcessIdentity = { pgid: number; startTime: string | null; token: string }
+// owner is the helper that started the group: its store, and its own pid and start time.
+type Owner = { store: string; pid: number; startTime: string | null }
+export type ProcessIdentity = { pgid: number; startTime: string | null; token: string; owner?: Owner }
+
+let self: Owner | null = null
 
 function stat(pid: number) {
   const text = fs.readFileSync(`/proc/${pid}/stat`, 'utf8')
@@ -15,16 +19,35 @@ function stat(pid: number) {
   return { pgid: Number(fields[2]), startTime: fields[19] }
 }
 
-export function processIdentity(pgid: number, token: string): ProcessIdentity {
-  let startTime: string | null = null
+function startTimeOf(pid: number): string | null {
   try {
-    startTime = process.platform === 'linux' ? stat(pgid).startTime : execFileSync('ps', ['-p', String(pgid), '-o', 'lstart='], { encoding: 'utf8' }).trim()
-  } catch {}
-  return { pgid, startTime, token }
+    return process.platform === 'linux' ? stat(pid).startTime : execFileSync('ps', ['-p', String(pid), '-o', 'lstart='], { encoding: 'utf8' }).trim()
+  } catch { return null }
+}
+
+// The helper names its store once, so the groups it starts carry it as their owner.
+export function ownProcesses(store: string) {
+  let real = store
+  try { real = fs.realpathSync(store) } catch {}
+  self = { store: real, pid: process.pid, startTime: startTimeOf(process.pid) }
+}
+
+export function processIdentity(pgid: number, token: string): ProcessIdentity {
+  return { pgid, startTime: startTimeOf(pgid), token, ...(self ? { owner: self } : {}) }
+}
+
+// A group is this helper's to stop when it started it, or a helper on the same store that is gone did.
+// Another helper's groups, such as those listed in a copied store, are left alone.
+function mine(owner: Owner | undefined) {
+  if (!owner) return true
+  if (!self || owner.store !== self.store) return false
+  if (owner.pid === self.pid && owner.startTime === self.startTime) return true
+  const now = startTimeOf(owner.pid)
+  return now == null || now !== owner.startTime
 }
 
 export function killOwnedGroup(identity: ProcessIdentity, log: (text: string) => void = () => {}): boolean {
-  if (!Number.isSafeInteger(identity?.pgid) || identity.pgid <= 1 || !identity.token) return false
+  if (!Number.isSafeInteger(identity?.pgid) || identity.pgid <= 1 || !identity.token || !mine(identity.owner)) return false
   let ours = false
   try {
     if (process.platform === 'linux') {

@@ -32,4 +32,33 @@ if [ -z "$NODE" ]; then
   echo "bitfrostd: no Node >= 23.6 found (set BITFROST_NODE)" >&2
   exit 1
 fi
+
+# The TUI takes over for a bare call on a terminal, or for "config".
+TUI=
+if [ "${1:-}" = config ] ||
+  { [ "$#" -eq 0 ] && [ -t 0 ] && [ -t 1 ] && [ -n "${TERM:-}" ] && [ "$TERM" != dumb ] &&
+    [ -z "${BITFROST_NO_TUI:-}" ]; }; then
+  if [ -n "${BITFROST_TUI:-}" ] && [ -x "$BITFROST_TUI" ]; then
+    TUI=$BITFROST_TUI
+  else
+    root=${HERE%/*/*/*}
+    for candidate in "$root/tui/bin/bitfrost-tui" "$root/tui/build/bitfrost-tui"; do
+      if [ -x "$candidate" ]; then
+        TUI=$candidate
+        break
+      fi
+    done
+  fi
+fi
+if [ -n "$TUI" ]; then
+  if [ "${1:-}" = config ]; then
+    shift
+  fi
+  BITFROST_NODE=$NODE
+  BITFROST_ENTRY=${HERE%/*}/daemon/bitfrostd.ts
+  # The command as it was run, so the TUI can start the new version after an update.
+  BITFROST_LAUNCHER=$(command -v "$0" 2>/dev/null || echo "$0")
+  export BITFROST_NODE BITFROST_ENTRY BITFROST_LAUNCHER
+  exec "$TUI" "$@"
+fi
 exec "$NODE" --disable-warning=ExperimentalWarning "$HERE/../daemon/bitfrostd.ts" "$@"

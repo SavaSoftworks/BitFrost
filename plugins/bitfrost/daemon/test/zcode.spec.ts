@@ -413,6 +413,47 @@ test('each ZCode turn persists a process identity and only a matching owned proc
   await until('killed turn', () => s.activeTurnId === null)
 })
 
+test('a process group is stopped only by the helper that started it, or after that helper is gone', async (t) => {
+  const { spawn, execFileSync } = await import('node:child_process')
+  const { killOwnedGroup, ownProcesses, processIdentity } = await import('../process.ts')
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bitfrost-owner-'))
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }))
+  const db = path.join(dir, 'bitfrost.db')
+  fs.writeFileSync(db, '')
+  ownProcesses(db)
+  const token = `owner-${process.pid}`
+  const group = () => {
+    const child = spawn(process.execPath, ['-e', 'setInterval(()=>{},1000)'], { detached: true, stdio: 'ignore', env: { ...process.env, BITFROST_ZCODE_TURN: token } })
+    t.after(() => { try { process.kill(-child.pid!, 'SIGKILL') } catch {} })
+    return new Promise<number>((r) => child.once('spawn', () => r(child.pid!)))
+  }
+  const alive = (pid: number) => {
+    try {
+      process.kill(pid, 0)
+      return process.platform === 'linux'
+        ? !/^\d+ \(.*\) Z /.test(fs.readFileSync(`/proc/${pid}/stat`, 'utf8'))
+        : !/^\s*Z/.test(execFileSync('ps', ['-p', String(pid), '-o', 'stat='], { encoding: 'utf8' }))
+    } catch { return false }
+  }
+  const pid = await group()
+  const mine = processIdentity(pid, token)
+  assert.equal(mine.owner!.pid, process.pid)
+  // Another store, as in a copy of the database: never stopped.
+  assert.equal(killOwnedGroup({ ...mine, owner: { ...mine.owner!, store: path.join(dir, 'copy.db') } }), false)
+  // Same store, but its helper still runs: not a leftover.
+  const helper = await group()
+  const other = processIdentity(helper, 'unused').startTime
+  assert.equal(killOwnedGroup({ ...mine, owner: { store: mine.owner!.store, pid: helper, startTime: other } }), false)
+  assert.ok(alive(pid))
+  // Same store, and its helper is gone: a leftover.
+  assert.equal(killOwnedGroup({ ...mine, owner: { store: mine.owner!.store, pid: helper, startTime: '1' } }), true)
+  await until('leftover stopped', () => !alive(pid))
+  // This helper's own group.
+  const own = await group()
+  assert.equal(killOwnedGroup(processIdentity(own, token)), true)
+  await until('own group stopped', () => !alive(own))
+})
+
 test('ZCode deferred questions never wait on a hung stop and preserve queued lead input', async (t) => {
   const run = fake(t, { first: [native], wait: true })
   await run.adapter.spawnSession(run.session, { model: 'GLM-test', cwd: run.dir, prompt: 'hello' })

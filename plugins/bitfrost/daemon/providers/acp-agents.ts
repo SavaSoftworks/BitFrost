@@ -81,7 +81,10 @@ export const GEMINI: AcpAgentSpec = {
 function acpFactory(spec: AcpAgentSpec): ProviderFactory {
   return {
     id: spec.id,
+    displayName: spec.displayName,
+    ...(spec.vendor ? { vendor: spec.vendor } : {}),
     optIn: spec.optIn,
+    detect: (env) => env.config.bin ?? env.resolveBinary(spec.binary),
     create(env) {
       const bin = env.config.bin ?? env.resolveBinary(spec.binary)
       if (!bin) return null

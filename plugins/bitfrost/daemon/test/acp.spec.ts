@@ -243,6 +243,12 @@ test('a turn becomes text, a thought, tools, a command with permission, file cha
     assert.deepStrictEqual(ev[11].entries, [{ content: 'List the files', status: 'completed' }, { content: 'Report back', status: 'in_progress' }])
     // The context size, never the turn's total (50000) from the prompt's answer.
     assert.deepStrictEqual(ev.filter((e) => e.type === 'usage').map((e) => [e.inputTokens, e.outputTokens, e.cachedInputTokens]), [[12000, 0, 0], [12000, 42, 0]])
+    const reports = ev.filter((e) => e.type === 'usage')
+    assert.equal(reports[0].requestId, reports[1].requestId)
+    assert.deepEqual(reports.map((e) => e.billing), [
+      { inputTokens: 0, outputTokens: 0, cachedInputTokens: 0, requests: 0 },
+      { inputTokens: 50000, outputTokens: 42, cachedInputTokens: 0, requests: 1 },
+    ])
     assert.deepStrictEqual([ev[15].status, ev[15].finalText, ev[15].error], ['completed', 'Done.', undefined])
     assert.strictEqual(ev[17].text, 'Again.')
 
