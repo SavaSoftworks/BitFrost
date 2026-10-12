@@ -11,6 +11,7 @@ import { fileURLToPath } from 'node:url'
 import { FEATURES, findFeature, pendingFeatures, type Feature } from '../features.ts'
 import { NEED_TERMINAL, setupFeatures as setupCurrentFeatures } from '../settings.ts'
 import { fakeTerminal } from './fake-terminal.ts'
+import { useTestSettings } from './fixtures/settings.ts'
 
 // Existing CLI question tests exercise the original 0.9.1 questions.
 const setupFeatures = (opts: Parameters<typeof setupCurrentFeatures>[0] = {}) => setupCurrentFeatures({ version: '0.9.1', ...opts })
@@ -18,6 +19,7 @@ const handback = findFeature('handback')!
 const DAEMON = fileURLToPath(new URL('../bitfrostd.ts', import.meta.url))
 
 test('TUI install defers new questions, persists the flag, and never opens a terminal', async (t) => {
+  useTestSettings(t)
   const config = tempConfig(t, { handback: { enabled: false } })
   const terminal = () => { assert.fail('a deferred install must not touch /dev/tty') }
   assert.equal(await setupCurrentFeatures({ file: config.file, version: '0.9.1', newOnly: true, defer: true, terminal }), 0)
@@ -31,6 +33,7 @@ test('TUI install defers new questions, persists the flag, and never opens a ter
 })
 
 test('CLI can complete deferred questions and marks settings up to date', { timeout: 2000 }, async (t) => {
+  useTestSettings(t)
   const config = tempConfig(t, { handback: { enabled: false } })
   const fake = fakeTerminal(t, ['\r', '\r', '\r', '\r'])
   assert.equal(await setupCurrentFeatures({ file: config.file, terminal: () => fake.terminal }), 0)
@@ -41,12 +44,22 @@ test('CLI can complete deferred questions and marks settings up to date', { time
 })
 
 test('explicit setup succeeds for that feature while other new settings stay pending', { timeout: 2000 }, async (t) => {
+  useTestSettings(t)
   const config = tempConfig(t, { handback: { enabled: false } })
   const fake = fakeTerminal(t, ['n\r'])
   assert.equal(await setupCurrentFeatures({ features: [handback], file: config.file, terminal: () => fake.terminal }), 0)
   const raw = JSON.parse(fs.readFileSync(config.file, 'utf8'))
   assert.equal(raw.settingsUpToDate, false)
   assert.equal(pendingFeatures(raw).length, 4)
+})
+
+test('answered production settings clear a stale pending flag without asking any questions', async (t) => {
+  const chosen = Object.fromEntries(FEATURES.map((f) => [f.key, f.defaults ?? {}]))
+  const config = tempConfig(t, JSON.stringify({ ...chosen, settingsUpToDate: false }))
+  assert.equal(await setupCurrentFeatures({ file: config.file, newOnly: true, defer: true, terminal: () => {
+    assert.fail('no production settings are unanswered')
+  } }), 0)
+  assert.deepEqual(JSON.parse(fs.readFileSync(config.file, 'utf8')), { ...chosen, settingsUpToDate: true })
 })
 
 function tempConfig(t: TestContext, contents: string | Record<string, unknown> = {}) {
