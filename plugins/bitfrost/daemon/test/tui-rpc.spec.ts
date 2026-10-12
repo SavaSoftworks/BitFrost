@@ -14,6 +14,7 @@ import { edit, revision, setModel } from '../configedit.ts'
 import { whyNot } from '../registry.ts'
 import { serveRpc } from '../tui-rpc.ts'
 import { availableFeatures } from '../features.ts'
+import { useTestSettings } from './fixtures/settings.ts'
 
 const model = (harness: string, provider: string, id: string) => ({ harness, provider, model: id, displayName: id, description: '', efforts: [], defaultEffort: null, isDefault: false })
 
@@ -112,6 +113,7 @@ function broker(t: any, replies: Record<string, (path: string) => any> = {}) {
 }
 
 test('broker: wizard drafts are read-only and recap saves all new answers together', async (t) => {
+  useTestSettings(t)
   const { rpc, file } = broker(t)
   fs.writeFileSync(file, JSON.stringify({ handback: { enabled: false }, settingsUpToDate: false, providers: { codex: { bin: '/custom' } } }))
   const original = fs.readFileSync(file, 'utf8')
@@ -134,6 +136,7 @@ test('broker: wizard drafts are read-only and recap saves all new answers togeth
 })
 
 test('broker: invalid or incomplete recap and concurrent edits cannot partially save', async (t) => {
+  useTestSettings(t)
   const { rpc, file } = broker(t)
   fs.writeFileSync(file, '{"handback":{"enabled":false},"settingsUpToDate":true}')
   const original = fs.readFileSync(file, 'utf8')
@@ -151,15 +154,16 @@ test('broker: invalid or incomplete recap and concurrent edits cannot partially 
 })
 
 test('broker: wizard re-evaluates conditional questions and drops hidden answers', async (t) => {
+  useTestSettings(t, [])
   const { rpc } = broker(t)
   const initial = (await rpc('settings.pending')).result
-  assert.equal(initial.steps.length, 5)
+  assert.equal(initial.steps.length, 1)
   assert.deepEqual(initial.answers.handback, { enabled: false, effort: 'low' })
   const enabled = (await rpc('settings.pending', { answers: { ...initial.answers, handback: { enabled: true } } })).result
-  assert.equal(enabled.steps.length, 6)
+  assert.equal(enabled.steps.length, 2)
   assert.equal(enabled.answers.handback.model, 'sonnet')
   const disabled = (await rpc('settings.pending', { answers: { ...enabled.answers, handback: { enabled: false, model: 'opus', effort: 'max' } } })).result
-  assert.equal(disabled.steps.length, 5)
+  assert.equal(disabled.steps.length, 1)
   assert.deepEqual(disabled.answers.handback, { enabled: false, effort: 'low' })
   assert.equal((await rpc('settings.configure', { revision: disabled.revision, answers: disabled.answers })).result.ok, true)
 })

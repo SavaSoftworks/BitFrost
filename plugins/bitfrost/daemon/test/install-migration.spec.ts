@@ -13,13 +13,14 @@ import { migrationBinary, migrationRoot } from './migrate.ts'
 import { Store } from '../store.ts'
 import { Session } from '../session.ts'
 import { DB_VERSION } from '../db-version.ts'
+import { TEST_SETTINGS } from './fixtures/settings.ts'
 
 const installer = fileURLToPath(new URL('../../../../release/install.sh', import.meta.url))
 const plugin = fileURLToPath(new URL('../../', import.meta.url))
 const rootPackage = fileURLToPath(new URL('../../../../package.json', import.meta.url))
 const version = JSON.parse(fs.readFileSync(path.join(plugin, '.claude-plugin/plugin.json'), 'utf8')).version
 
-function fixture(t: any, corruption?: 'plan' | 'version', releaseVersion = version) {
+function fixture(t: any, corruption?: 'plan' | 'version', releaseVersion = version, newSettings = false) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'bitfrost-install-migration-'))
   t.after(() => fs.rmSync(root, { recursive: true, force: true }))
   const home = path.join(root, 'home'), data = path.join(home, 'custom database')
@@ -34,6 +35,11 @@ function fixture(t: any, corruption?: 'plan' | 'version', releaseVersion = versi
   fs.copyFileSync(rootPackage, path.join(dest, 'package.json'))
   const manifest = path.join(dest, '.claude-plugin', 'plugin.json')
   fs.writeFileSync(manifest, JSON.stringify({ ...JSON.parse(fs.readFileSync(manifest, 'utf8')), version: releaseVersion }))
+  if (newSettings) {
+    // Only these isolated test releases contain the synthetic future settings.
+    fs.appendFileSync(path.join(dest, 'daemon', 'features.ts'),
+      `\nFEATURES.splice(0, FEATURES.length, ...FEATURES.filter((f) => f.id === 'handback'), ...${JSON.stringify(TEST_SETTINGS)});\n`)
+  }
   // Avoid network requests for the optional TUI in these offline installer tests.
   fs.mkdirSync(path.join(stage, 'tui', 'bin'), { recursive: true })
   fs.writeFileSync(path.join(stage, 'tui', 'bin', 'bitfrost-tui'), '#!/bin/sh\nexit 0\n', { mode: 0o755 })
@@ -103,8 +109,8 @@ exec "$(dirname "$(readlink -f "$0")")/bitfrostd.real" "$@"
   assert.match(result.output, /New settings.*configure in the TUI/)
 })
 
-test('same-source 0.9.1 -> 0.9.2 install defers four settings and the installed broker confirms them', async (t) => {
-  const old = fixture(t, undefined, '0.9.1')
+test('an upgrade defers fixture settings introduced in its version and the installed broker confirms them', async (t) => {
+  const old = fixture(t, undefined, '0.9.1', true)
   const configFile = path.join(old.env.XDG_CONFIG_HOME, 'bitfrost', 'config.json')
   fs.mkdirSync(path.dirname(configFile), { recursive: true })
   fs.writeFileSync(configFile, '{"handback":{"enabled":false},"settingsUpToDate":true}')
@@ -114,7 +120,7 @@ test('same-source 0.9.1 -> 0.9.2 install defers four settings and the installed 
   assert.equal(first.status, 0, first.output)
   assert.equal(JSON.parse(fs.readFileSync(configFile, 'utf8')).settingsUpToDate, true)
   assert.equal(fs.readlinkSync(path.join(old.installed, 'current')), 'versions/0.9.1')
-  const current = fixture(t)
+  const current = fixture(t, undefined, version, true)
   const upgraded = await install({ ...old, tarball: current.tarball })
   assert.equal(upgraded.status, 0, upgraded.output)
   assert.match(upgraded.output, /New settings.*configure in the TUI/)

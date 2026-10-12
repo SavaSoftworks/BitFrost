@@ -42,6 +42,29 @@ def read_pty(master):
         return b""
 
 
+def write_pty(master, data, drain, timeout=3):
+    pending = memoryview(data)
+    deadline = time.monotonic() + timeout
+    while pending:
+        if time.monotonic() >= deadline:
+            raise TimeoutError(f"PTY input stalled with {len(pending)} bytes unsent")
+        try:
+            written = os.write(master, pending)
+        except OSError as error:
+            if error.errno not in (errno.EAGAIN, errno.EWOULDBLOCK):
+                raise
+            written = 0
+        if written:
+            pending = pending[written:]
+            continue
+        # The nonblocking master applies to writes too. Keep output flowing:
+        # the child may be waiting to finish a frame before it reads more input.
+        drain(min(0.01, max(0, deadline - time.monotonic())))
+        remaining = deadline - time.monotonic()
+        if remaining > 0:
+            select.select([], [master], [], min(0.05, remaining))
+
+
 def terminal_settings(fd):
     settings = termios.tcgetattr(fd)
     # BSD sets PENDIN when restoring ICANON, even with an empty input queue.
@@ -270,7 +293,7 @@ def run(binary, broker, measure=False, snapshots=None, no_anim=False):
                 if moving and now >= next_motion:
                     points = ((31, 20), (60, 27), (60, 29), (60, 31), (80, 35))
                     x, y = points[motion % len(points)]
-                    os.write(master, ("\x1b[<35;" + str(x) + ";" + str(y) + "M").encode())
+                    write_pty(master, ("\x1b[<35;" + str(x) + ";" + str(y) + "M").encode(), drain)
                     motion += 1
                     next_motion = now + 0.01
                 wake = min(deadline, next_motion) if moving else deadline
@@ -281,7 +304,7 @@ def run(binary, broker, measure=False, snapshots=None, no_anim=False):
                     screen.feed(data)
 
         def key(data, delay=0.12):
-            os.write(master, data)
+            write_pty(master, data, drain)
             drain(delay)
             assert process.poll() is None, "UI exited while navigating"
 
@@ -334,7 +357,7 @@ def run(binary, broker, measure=False, snapshots=None, no_anim=False):
             for action in (signal.SIGTSTP, b"\x1a"):
                 before = len(output)
                 if isinstance(action, bytes):
-                    os.write(master, action)
+                    write_pty(master, action, drain)
                 else:
                     os.kill(process.pid, action)
                 wait_stopped(process, drain)
@@ -920,7 +943,7 @@ def run(binary, broker, measure=False, snapshots=None, no_anim=False):
             os.kill(process.pid, signal.SIGCONT)
             drain(0.15)
             assert terminal_settings(slave) != original, "Continue did not reenter raw mode"
-            os.write(master, b"\x1a")
+            write_pty(master, b"\x1a", drain)
             wait_stopped(process, drain)
             assert_terminal_restored(slave, original, "Ctrl-Z did not restore terminal")
             os.kill(process.pid, signal.SIGCONT)
@@ -930,7 +953,7 @@ def run(binary, broker, measure=False, snapshots=None, no_anim=False):
             drain(0.12)
             key(b"q")
             key(b"q", 0.3)
-            os.write(master, b"q")
+            write_pty(master, b"q", drain)
             wait_exited(process, master, output)
             drain(0.05)
             assert process.returncode == 0, "UI did not exit cleanly"
@@ -968,18 +991,22 @@ def check_error_page_and_signals(binary):
         original = terminal_settings(slave)
         process = subprocess.Popen([str(binary)], stdin=slave, stdout=slave, stderr=slave, env=env)
         data = bytearray()
-        try:
-            deadline = time.monotonic() + 0.3
+
+        def drain(seconds):
+            deadline = time.monotonic() + seconds
             while time.monotonic() < deadline:
                 ready, _, _ = select.select([master], [], [], max(0, deadline - time.monotonic()))
                 if ready:
                     data.extend(read_pty(master))
+
+        try:
+            drain(0.3)
             assert b"BitFrost helper not found" in data, "Missing-helper error page absent"
             assert b"\x1b[?1003h" not in data and b"\x1b[?1006h" not in data, "Environment static mode enabled mouse"
             assert b"\x1b[38;5;" in data, "Apple Terminal did not use color fallback"
             assert b"\x1b[38;2;" not in data, "Apple Terminal used unsupported RGB output"
             if isinstance(action, bytes):
-                os.write(master, action)
+                write_pty(master, action, drain)
             else:
                 os.kill(process.pid, action)
             wait_exited(process, master, data)
@@ -1094,9 +1121,9 @@ def run_mouse_path(binary, no_anim):
                     screen.feed(data)
 
         def report(button, x, y, delay=0.15):
-            os.write(master, ("\x1b[<" + str(button) + ";" + str(x + 1) + ";" + str(y + 1) + "M").encode())
+            write_pty(master, ("\x1b[<" + str(button) + ";" + str(x + 1) + ";" + str(y + 1) + "M").encode(), drain)
             if button == 0:
-                os.write(master, ("\x1b[<0;" + str(x + 1) + ";" + str(y + 1) + "m").encode())
+                write_pty(master, ("\x1b[<0;" + str(x + 1) + ";" + str(y + 1) + "m").encode(), drain)
             drain(delay)
 
         def selected_model_row():
@@ -1112,7 +1139,7 @@ def run_mouse_path(binary, no_anim):
             report(0, x + 1, 37, 0.1)
             assert "Keyboard & Mouse" in screen.text() and "Navigation" in screen.text(), "Controls hint did not open its overlay"
             report(0, x + 1, 37, 0.1)
-            os.write(master, b"\x1b")
+            write_pty(master, b"\x1b", drain)
             drain(delay)
 
         try:
@@ -1220,13 +1247,13 @@ def run_update_path(binary, no_anim, failure=None, no_mouse=False):
             assert "New version available: 0.9.2" in screen.text(), "Version check did not show the update notice"
             assert "Update" in "".join(c[0] for c in screen.cells[33][107:117]), "Update button moved"
             assert sum(r["method"] == "update.check" for r in requests()) == 1, "Home checked more than once"
-            os.write(master, b"\x1b[C")
+            write_pty(master, b"\x1b[C", drain)
             drain(0.12)
             assert "Update" in screen.selected(top=33, bottom=34), "Right did not focus Update"
-            os.write(master, b"ee")
+            write_pty(master, b"ee", drain)
             drain(0.2)
             assert "Providers" not in screen.text(), "Double press activated the underlying menu"
-            os.write(master, b"\x1b[<0;110;34M\x1b[<0;110;34m")
+            write_pty(master, b"\x1b[<0;110;34M\x1b[<0;110;34m", drain)
             deadline = time.monotonic() + 9
             expected = "Restart bitfrost to use 0.9.2" if failure else "Updated to 0.9.2"
             while time.monotonic() < deadline:
@@ -1265,7 +1292,7 @@ def run_update_path(binary, no_anim, failure=None, no_mouse=False):
                     before = len(output)
                     drain(0.2)
                     assert len(output) == before, "Reload lost the command-line animation opt-out"
-            os.write(master, b"q")
+            write_pty(master, b"q", drain)
             wait_exited(process, master, output)
             drain(0.05)
             assert process.returncode == 0 and terminal_settings(slave) == original, "Update path did not restore original terminal settings"
@@ -1316,7 +1343,7 @@ def run_configuration_path(binary, no_anim, snapshots=None):
             assert predicate(), message + "\n" + screen.text()
 
         def key(value, predicate, message):
-            os.write(master, value)
+            write_pty(master, value, drain)
             wait_for(predicate, message)
 
         def step(value, title):
@@ -1358,7 +1385,7 @@ def run_configuration_path(binary, no_anim, snapshots=None):
             writes = [json.loads(line) for line in log.read_text().splitlines()
                       if json.loads(line)["method"] == "settings.configure"]
             assert len(writes) == 1 and len(writes[0]["params"]["answers"]) == 4, "Recap did not save all four answers together"
-            os.write(master, b"q")
+            write_pty(master, b"q", drain)
             wait_exited(process, master, output)
             assert_terminal_restored(slave, original, "Configuration path did not restore terminal")
         finally:

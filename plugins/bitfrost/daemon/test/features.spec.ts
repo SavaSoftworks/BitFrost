@@ -5,6 +5,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { FEATURES, CLAUDE_MODELS, askFeature, availableFeatures, claudeModelId, claudeModels, findFeature, optionsFor, pendingFeatures, type Feature, type Question } from '../features.ts'
 import { PROVIDERS } from '../providers/index.ts'
+import { TEST_SETTINGS, useTestSettings } from './fixtures/settings.ts'
 
 const handback = findFeature('handback')!
 
@@ -18,12 +19,11 @@ test('pendingFeatures asks for missing keys, but never re-asks a declined settin
   for (const config of [undefined, null, false, 'bad', []]) assert.deepEqual(pendingFeatures(config), FEATURES)
 })
 
-test('same-source 0.9.1 installs leave the four inert 0.9.2 features for the upgrade', () => {
+test('version gating leaves future fixture settings for the upgrade, regardless of a stored flag', (t) => {
+  useTestSettings(t)
   assert.deepEqual(availableFeatures('0.9.0'), [])
   assert.deepEqual(availableFeatures('0.9.1'), [handback])
-  const demos = pendingFeatures({ handback: { enabled: false }, settingsUpToDate: true }, '0.9.2')
-  assert.equal(demos.length, 4)
-  assert.ok(demos.every((f) => f.since === '0.9.2' && f.id.startsWith('preview')))
+  assert.deepEqual(pendingFeatures({ handback: { enabled: false }, settingsUpToDate: true }, '0.9.2'), TEST_SETTINGS)
 })
 
 test('feature ids and keys are unique and ids do not collide with any provider', () => {
