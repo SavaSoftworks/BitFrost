@@ -12,7 +12,7 @@ esac
 # The host launches this same script in a container with isolated build caches.
 if [ "${2:-}" = --container ] && [ $# -eq 2 ] && [ "$component" != all ]; then
   case $component in migrations) build_path=plugins/bitfrost/migrations/build ;; tui) build_path=tui/build ;; esac
-  # shellcheck disable=SC2329 # Invoked by the EXIT trap.
+  # shellcheck disable=SC2317,SC2329 # Invoked indirectly by the EXIT trap (older/newer ShellCheck).
   cleanup() {
     status=$?
     trap - EXIT

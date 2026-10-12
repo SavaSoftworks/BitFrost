@@ -7,6 +7,7 @@
 import argparse
 import codecs
 import errno
+import faulthandler
 import fcntl
 import json
 import os
@@ -22,6 +23,23 @@ import tempfile
 import termios
 import time
 import unicodedata
+
+
+def open_pty():
+    master, slave = pty.openpty()
+    # Readiness is advisory on BSD PTYs. An empty read after select must never
+    # block the test thread and defeat its deadline. The child keeps a blocking slave.
+    os.set_blocking(master, False)
+    return master, slave
+
+
+def read_pty(master):
+    try:
+        return os.read(master, 65536)
+    except OSError as error:
+        if error.errno not in (errno.EAGAIN, errno.EWOULDBLOCK, errno.EIO):
+            raise
+        return b""
 
 
 def terminal_settings(fd):
@@ -61,21 +79,10 @@ def wait_exited(process, master, output, timeout=3):
         if remaining <= 0:
             raise subprocess.TimeoutExpired(process.args, timeout)
         if select.select([master], [], [], min(0.05, remaining))[0]:
-            try:
-                chunk = os.read(master, 65536)
-            except OSError as error:
-                if error.errno != errno.EIO:
-                    raise
-                chunk = b""
-            output.extend(chunk)
+            output.extend(read_pty(master))
     # poll() may observe exit before the final restoration bytes were consumed.
     while select.select([master], [], [], 0)[0]:
-        try:
-            chunk = os.read(master, 65536)
-        except OSError as error:
-            if error.errno != errno.EIO:
-                raise
-            break
+        chunk = read_pty(master)
         if not chunk:
             break
         output.extend(chunk)
@@ -96,7 +103,7 @@ def cleanup_process(process, master):
     while process.poll() is None and time.monotonic() < deadline:
         if select.select([master], [], [], 0.05)[0]:
             try:
-                os.read(master, 65536)
+                read_pty(master)
             except OSError:
                 break
     if process.poll() is None:
@@ -229,7 +236,7 @@ class Screen:
 
 
 def run(binary, broker, measure=False, snapshots=None, no_anim=False):
-    master, slave = pty.openpty()
+    master, slave = open_pty()
     fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 120, 0, 0))
     original = terminal_settings(slave)
     screen = Screen()
@@ -269,7 +276,7 @@ def run(binary, broker, measure=False, snapshots=None, no_anim=False):
                 wake = min(deadline, next_motion) if moving else deadline
                 ready, _, _ = select.select([master], [], [], max(0, wake - time.monotonic()))
                 if ready:
-                    data = os.read(master, 65536)
+                    data = read_pty(master)
                     output.extend(data)
                     screen.feed(data)
 
@@ -956,7 +963,7 @@ def check_error_page_and_signals(binary):
     for name in ("BITFROST_TUI_BROKER", "BITFROST_NODE", "BITFROST_ENTRY"):
         env.pop(name, None)
     for action in (b"\x1b", b"\x03", signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
-        master, slave = pty.openpty()
+        master, slave = open_pty()
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 80, 0, 0))
         original = terminal_settings(slave)
         process = subprocess.Popen([str(binary)], stdin=slave, stdout=slave, stderr=slave, env=env)
@@ -966,7 +973,7 @@ def check_error_page_and_signals(binary):
             while time.monotonic() < deadline:
                 ready, _, _ = select.select([master], [], [], max(0, deadline - time.monotonic()))
                 if ready:
-                    data.extend(os.read(master, 65536))
+                    data.extend(read_pty(master))
             assert b"BitFrost helper not found" in data, "Missing-helper error page absent"
             assert b"\x1b[?1003h" not in data and b"\x1b[?1006h" not in data, "Environment static mode enabled mouse"
             assert b"\x1b[38;5;" in data, "Apple Terminal did not use color fallback"
@@ -991,7 +998,7 @@ def check_mouse_signal_cleanup(binary):
         env.pop(name, None)
     for action in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP, signal.SIGABRT, signal.SIGSEGV,
                    signal.SIGBUS, signal.SIGILL, signal.SIGFPE):
-        master, slave = pty.openpty()
+        master, slave = open_pty()
         original = terminal_settings(slave)
         process = subprocess.Popen(
             [str(binary)], stdin=slave, stdout=slave, stderr=slave, env=env,
@@ -1003,15 +1010,13 @@ def check_mouse_signal_cleanup(binary):
             while time.monotonic() < deadline:
                 ready, _, _ = select.select([master], [], [], max(0, deadline - time.monotonic()))
                 if ready:
-                    data.extend(os.read(master, 65536))
+                    data.extend(read_pty(master))
             assert b"\x1b[?1006h\x1b[?1003h" in data, "Animated home did not enable mouse before signal"
             os.kill(process.pid, action)
             try:
                 wait_exited(process, master, data)
             except subprocess.TimeoutExpired as error:
                 raise AssertionError(f"UI did not exit after {signal.Signals(action).name}") from error
-            while select.select([master], [], [], 0)[0]:
-                data.extend(os.read(master, 65536))
             assert b"\x1b[?1003l\x1b[?1006l" in data, "Signal did not disable mouse"
             assert b"\x1b[?25h\x1b[?1049l" in data, "Signal did not restore cursor and screen"
             assert_terminal_restored(slave, original, "Signal did not restore termios")
@@ -1026,7 +1031,7 @@ def check_mouse_opt_out(binary):
     for arguments, variables in ((["--no-mouse"], {}), ([], {"BITFROST_NO_MOUSE": "1"}),
                                   (["--no-mouse", "--no-anim"], {}),
                                   (["--no-mouse", "--no-anim", "--resume"], {})):
-        master, slave = pty.openpty()
+        master, slave = open_pty()
         original = terminal_settings(slave)
         env = dict(os.environ, TERM="xterm-256color")
         for name in ("BITFROST_TUI_BROKER", "BITFROST_NODE", "BITFROST_ENTRY", "BITFROST_NO_MOUSE", "BITFROST_NO_ANIM"):
@@ -1040,7 +1045,7 @@ def check_mouse_opt_out(binary):
             while time.monotonic() < deadline:
                 ready, _, _ = select.select([master], [], [], max(0, deadline - time.monotonic()))
                 if ready:
-                    data.extend(os.read(master, 65536))
+                    data.extend(read_pty(master))
 
         try:
             drain(0.15)
@@ -1064,7 +1069,7 @@ def check_mouse_opt_out(binary):
 
 
 def run_mouse_path(binary, no_anim):
-    master, slave = pty.openpty()
+    master, slave = open_pty()
     fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 120, 0, 0))
     original = terminal_settings(slave)
     screen, output = Screen(), bytearray()
@@ -1084,7 +1089,7 @@ def run_mouse_path(binary, no_anim):
             while time.monotonic() < deadline:
                 ready, _, _ = select.select([master], [], [], max(0, deadline - time.monotonic()))
                 if ready:
-                    data = os.read(master, 65536)
+                    data = read_pty(master)
                     output.extend(data)
                     screen.feed(data)
 
@@ -1167,7 +1172,7 @@ def run_mouse_path(binary, no_anim):
 
 
 def run_update_path(binary, no_anim, failure=None, no_mouse=False):
-    master, slave = pty.openpty()
+    master, slave = open_pty()
     fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 120, 0, 0))
     original = terminal_settings(slave)
     screen, output = Screen(), bytearray()
@@ -1199,7 +1204,7 @@ def run_update_path(binary, no_anim, failure=None, no_mouse=False):
             while time.monotonic() < deadline:
                 ready, _, _ = select.select([master], [], [], max(0, deadline - time.monotonic()))
                 if ready:
-                    data = os.read(master, 65536)
+                    data = read_pty(master)
                     output.extend(data)
                     screen.feed(data)
                     area = "\n".join("".join(c[0] for c in row[69:117]) for row in screen.cells[2:35])
@@ -1279,7 +1284,7 @@ def run_update_path(binary, no_anim, failure=None, no_mouse=False):
 
 
 def run_configuration_path(binary, no_anim, snapshots=None):
-    master, slave = pty.openpty()
+    master, slave = open_pty()
     fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 120, 0, 0))
     original = terminal_settings(slave)
     screen, output = Screen(), bytearray()
@@ -1299,7 +1304,7 @@ def run_configuration_path(binary, no_anim, snapshots=None):
             while time.monotonic() < deadline:
                 ready, _, _ = select.select([master], [], [], max(0, deadline - time.monotonic()))
                 if ready:
-                    data = os.read(master, 65536)
+                    data = read_pty(master)
                     output.extend(data)
                     screen.feed(data)
 
@@ -1372,19 +1377,27 @@ if __name__ == "__main__":
     parser.add_argument("--snapshots")
     parser.add_argument("--no-anim", action="store_true")
     args = parser.parse_args()
-    run(
-        args.binary.resolve(),
-        Path(__file__).with_name("fake-broker.mjs").resolve(),
-        args.measure,
-        args.snapshots,
-        args.no_anim,
-    )
-    check_error_page_and_signals(args.binary.resolve())
-    check_mouse_signal_cleanup(args.binary.resolve())
-    check_mouse_opt_out(args.binary.resolve())
-    run_mouse_path(args.binary.resolve(), args.no_anim)
-    run_configuration_path(args.binary.resolve(), args.no_anim, args.snapshots)
-    run_update_path(args.binary.resolve(), args.no_anim)
-    run_update_path(args.binary.resolve(), args.no_anim, "unset")
-    run_update_path(args.binary.resolve(), args.no_anim, "exec")
-    run_update_path(args.binary.resolve(), True, no_mouse=True)
+    cases = [
+        ("navigation", lambda: run(args.binary.resolve(), Path(__file__).with_name("fake-broker.mjs").resolve(),
+                                   args.measure, args.snapshots, args.no_anim)),
+        ("error page and signals", lambda: check_error_page_and_signals(args.binary.resolve())),
+        ("mouse signal cleanup", lambda: check_mouse_signal_cleanup(args.binary.resolve())),
+        ("mouse opt-outs", lambda: check_mouse_opt_out(args.binary.resolve())),
+        ("mouse navigation", lambda: run_mouse_path(args.binary.resolve(), args.no_anim)),
+        ("new settings", lambda: run_configuration_path(args.binary.resolve(), args.no_anim, args.snapshots)),
+        ("update reload", lambda: run_update_path(args.binary.resolve(), args.no_anim)),
+        ("update without launcher", lambda: run_update_path(args.binary.resolve(), args.no_anim, "unset")),
+        ("update with missing launcher", lambda: run_update_path(args.binary.resolve(), args.no_anim, "exec")),
+        ("update with CLI opt-outs", lambda: run_update_path(args.binary.resolve(), True, no_mouse=True)),
+    ]
+    for name, case in cases:
+        started = time.monotonic()
+        print("Starting PTY " + name + (" (static)" if args.no_anim else " (animated)"), flush=True)
+        # A stuck OS call must leave a Python stack in the CI log before CTest's
+        # outer timeout, even if the subprocess never gets as far as an assertion.
+        faulthandler.dump_traceback_later(60, repeat=True)
+        try:
+            case()
+        finally:
+            faulthandler.cancel_dump_traceback_later()
+        print(f"Finished PTY {name} in {time.monotonic() - started:.2f}s", flush=True)

@@ -79,5 +79,6 @@ jobs:
       - name: Check the C++ style
         run: |
           python3 -m pip install --user --break-system-packages clang-format
-          export PATH="$(python3 -m site --user-base)/bin:$PATH"
+          python_user_base=$(python3 -m site --user-base)
+          export PATH="$python_user_base/bin:$PATH"
           ./release/check.sh --style
