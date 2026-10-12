@@ -497,6 +497,18 @@ function emit(message)
         appendFileSync(process.env.BITFROST_FAKE_EVENT_LOG, JSON.stringify(message) + '\n');
     process.stdout.write(JSON.stringify(message) + '\n');
 }
+function reply(message)
+{
+    // Exercise asynchronous UI readiness without delaying watch notifications.
+    const delay = Number(process.env.BITFROST_FAKE_RESPONSE_DELAY_MS || 0);
+    if (delay <= 0)
+        return emit(message);
+    const timer = setTimeout(() => {
+        timers.delete(timer);
+        emit(message);
+    }, delay);
+    timers.add(timer);
+}
 const input = readline.createInterface({input : process.stdin, crlfDelay : Infinity});
 input.on('line', line => {
     let request;
@@ -505,11 +517,11 @@ input.on('line', line => {
         request = JSON.parse(line);
         if (process.env.BITFROST_FAKE_LOG)
             appendFileSync(process.env.BITFROST_FAKE_LOG, line + '\n');
-        emit({id : request.id, result : result(request.method, request.params ?? {})});
+        reply({id : request.id, result : result(request.method, request.params ?? {})});
     }
     catch (error)
     {
-        emit({
+        reply({
             id : request?.id ?? null,
             error : {code : error.code ?? 'internal', message : error.message ?? 'Fake broker error'}
         });

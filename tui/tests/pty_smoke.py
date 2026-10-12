@@ -1287,7 +1287,8 @@ def run_configuration_path(binary, no_anim, snapshots=None):
         log = Path(temporary) / "requests.ndjson"
         env = dict(os.environ, TERM="xterm-256color", COLORTERM="truecolor",
                    BITFROST_TUI_BROKER="node " + str(Path(__file__).with_name("fake-broker.mjs").resolve()),
-                   BITFROST_FAKE_LOG=str(log), BITFROST_FAKE_NEW_SETTINGS="1")
+                   BITFROST_FAKE_LOG=str(log), BITFROST_FAKE_NEW_SETTINGS="1",
+                   BITFROST_FAKE_RESPONSE_DELAY_MS="600")
         env.pop("BITFROST_NO_ANIM", None)
         env.pop("BITFROST_PRETEND_VERSION", None)
         process = subprocess.Popen([str(binary)] + (["--no-anim"] if no_anim else []),
@@ -1302,44 +1303,57 @@ def run_configuration_path(binary, no_anim, snapshots=None):
                     output.extend(data)
                     screen.feed(data)
 
-        def key(value):
+        def wait_for(predicate, message, timeout=3):
+            deadline = time.monotonic() + timeout
+            while not predicate() and time.monotonic() < deadline:
+                drain(min(0.02, max(0, deadline - time.monotonic())))
+                assert process.poll() is None, "UI exited while configuring new settings"
+            assert predicate(), message + "\n" + screen.text()
+
+        def key(value, predicate, message):
             os.write(master, value)
-            drain(0.15)
+            wait_for(predicate, message)
+
+        def step(value, title):
+            key(value, lambda: title in screen.text() and "Continue" in screen.text(),
+                "Wizard did not finish loading " + title)
 
         try:
-            drain(0.5)
-            assert "Configure new settings" in screen.text(), "Pending settings action missing"
-            key(b"de")
+            # Replies deliberately exceed the old 500 ms startup / 150 ms key
+            # sleeps, so readiness must follow the actual completed UI state.
+            wait_for(lambda: "Configure new settings" in screen.text(), "Pending settings action missing")
+            step(b"de", "Preview appearance")
             assert "1 • 2 • 3 • 4 • Confirm" in screen.text(), "Stepper header missing"
-            key(b"s")
-            assert "Compact" in screen.selected(), "W/S did not choose a wizard option"
+            key(b"s", lambda: "Compact" in screen.selected(), "W/S did not choose a wizard option")
             screen.save(snapshots, "configuration-question")
-            key(b"e")
-            key(b"a")
+            step(b"e", "Preview notifications")
+            step(b"a", "Preview appearance")
             assert "Compact" in screen.selected(), "A did not revisit the saved draft"
-            key(b"\t")
-            assert "Previous / Next step" in screen.text(), "Wizard controls are missing"
-            key(b"\t")
-            key(b"d")
-            key(b"e")
-            key(b"e")
-            key(b"e")
-            assert "Review your choices" in screen.text(), "Wizard recap missing"
+            key(b"\t", lambda: "Previous / Next step" in screen.text(), "Wizard controls are missing")
+            key(b"\t", lambda: "Previous / Next step" not in screen.text(), "Wizard controls did not close")
+            step(b"d", "Preview notifications")
+            step(b"e", "Preview history")
+            step(b"e", "Preview startup")
+            key(b"e", lambda: "Review your choices" in screen.text() and "Save settings" in screen.text(),
+                "Wizard recap missing")
             assert "Compact" in screen.text() and "Preview startup" in screen.text(), "Recap omitted answers"
             screen.save(snapshots, "configuration-recap")
             requests = [json.loads(line) for line in log.read_text().splitlines()]
             assert not any(r["method"] == "settings.configure" for r in requests), "Draft was committed early"
-            key(b"q")
+            key(b"q", lambda: "Review your choices" not in screen.text(), "Cancel did not close the wizard")
             assert "Configure new settings" in screen.text(), "Cancel lost pending settings"
-            key(b"e")
-            for _ in range(4):
-                key(b"e")
-            key(b"e")
+            step(b"e", "Preview appearance")
+            for title in ("Preview notifications", "Preview history", "Preview startup"):
+                step(b"e", title)
+            key(b"e", lambda: "Review your choices" in screen.text() and "Save settings" in screen.text(),
+                "Reopened wizard recap missing")
+            key(b"e", lambda: "New settings saved" in screen.text() and "Review your choices" not in screen.text(),
+                "Successful recap did not finish saving")
             assert "Configure new settings" not in screen.text(), "Successful recap did not clear pending settings"
             writes = [json.loads(line) for line in log.read_text().splitlines()
                       if json.loads(line)["method"] == "settings.configure"]
             assert len(writes) == 1 and len(writes[0]["params"]["answers"]) == 4, "Recap did not save all four answers together"
-            key(b"q")
+            os.write(master, b"q")
             wait_exited(process, master, output)
             assert_terminal_restored(slave, original, "Configuration path did not restore terminal")
         finally:
