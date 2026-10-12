@@ -45,13 +45,16 @@ test('a standalone plugin uses bundled package metadata to select its schema sna
   const script = `import { Store } from ${JSON.stringify(pathToFileURL(path.join(daemon, 'store.ts')).href)};
 const store = new Store(':memory:');
 if (store.degraded) throw new Error(store.error);
-console.log(store.db.prepare('PRAGMA user_version').get().user_version);
+process.stdout.write(String(store.db.prepare('PRAGMA user_version').get().user_version));
 store.close();`
   const run = () => {
-    const result = spawnSync(process.execPath, ['--disable-warning=ExperimentalWarning', '--input-type=module', '-e', script], { encoding: 'utf8' })
+    // Numeric console.log output is ANSI-colored when the caller forces colors.
+    const result = spawnSync(process.execPath, ['--disable-warning=ExperimentalWarning', '--input-type=module', '-e', script], {
+      encoding: 'utf8', env: { ...process.env, FORCE_COLOR: '1' }, timeout: 5000,
+    })
     assert.ifError(result.error)
     assert.equal(result.status, 0, result.stderr)
-    assert.equal(Number(result.stdout.trim()), target)
+    assert.equal(Number(result.stdout.trim()), target, JSON.stringify(result.stdout))
   }
   run()
   // A cache's surrounding package must not override the bundled release.

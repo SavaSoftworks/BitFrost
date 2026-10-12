@@ -145,6 +145,11 @@ if(CLANG_FORMAT)
 endif()
 find_package(Python3 COMPONENTS Interpreter QUIET)
 find_program(NODE_EXECUTABLE node)
+if(Python3_Interpreter_FOUND)
+    add_test(NAME pty-io COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/pty_io_selftest.py)
+    set_tests_properties(pty-io PROPERTIES TIMEOUT 10)
+endif()
 if(Python3_Interpreter_FOUND AND NODE_EXECUTABLE)
     add_test(NAME pty-smoke COMMAND ${Python3_EXECUTABLE}
         ${CMAKE_CURRENT_SOURCE_DIR}/tests/pty_smoke.py $<TARGET_FILE:bitfrost-tui>)
