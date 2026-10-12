@@ -44,7 +44,10 @@ jobs:
         run: |
           ./release/build-tui.sh --static dist/bitfrost-tui -- \
             -DCMAKE_OSX_ARCHITECTURES='arm64;x86_64' -DCMAKE_OSX_DEPLOYMENT_TARGET=12.3
-          ctest --test-dir tui/build --output-on-failure
+          # Hosted macOS PTYs make the Python harness's backpressure and screen
+          # timing checks unreliable. Keep them in Linux CI and local checks;
+          # the universal build and native selftests still run here.
+          ctest --test-dir tui/build --output-on-failure --exclude-regex '^pty-'
       - name: Check the shipped binary
         run: |
           version=$(sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' plugins/bitfrost/.claude-plugin/plugin.json)
