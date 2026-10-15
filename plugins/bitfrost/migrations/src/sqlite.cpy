@@ -12,9 +12,14 @@
       *>     REFERENCE in both directions. GnuCOBOL 3.1 and 3.2 pass
       *>     BY VALUE integers as 32 bits, so wider values would
       *>     truncate.
+      *>   - bf_ints / bf_bind_ints transfer runs of contiguous native
+      *>     BINARY-DOUBLE SIGNED fields BY REFERENCE, with no padding
+      *>     or numeric conversion. Counts/column positions BY VALUE.
       *>   - Text passed to bf_* needs one trailing NUL: x'00' appended
       *>     via FUNCTION CONCATENATE, or a z'...' literal for short
       *>     constants.
+      *>   - bf_text_slice returns a counted, unpadded text field. Only
+      *>     its returned length is valid; never inspect the field tail.
       *>   - Every bf_* call returns a C status in the RETURNING field:
       *>     MIGRATION-OK succeeds; anything else fails and the C layer
       *>     retains the message for the caller's FATAL to fetch.

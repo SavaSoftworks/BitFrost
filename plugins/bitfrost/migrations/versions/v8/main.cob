@@ -26,40 +26,37 @@
        01  SESSION-TOTALS                        PIC X VALUE 'N'.
            88  SESSION-TOTALS-NEEDED                 VALUE 'Y'.
 
-      *> SQLite call state. QUERY-VALUE receives scalars from
-      *> READ-NUMBER and doubles as the bind scratch in PERSIST-USAGE.
+      *> SQLite call state. QUERY-VALUE receives READ-NUMBER scalars.
        01  CALL-STATUS                           BINARY-LONG.
        01  QUERY-VALUE                           BINARY-DOUBLE SIGNED.
        01  SQL-TEXT                              PIC X(32768).
 
       *> Column positions in the usage-events SELECT of RECOUNT-USAGE.
-      *> The four reported billing amounts start at column 8 and run
-      *> for METRIC-COUNT columns.
+      *> USAGE-TIME: event time and turn flag at columns 2..3.
+      *> USAGE-AMOUNTS: raw input/output/cached, then four reported
+      *> billing metrics, at columns 5..11. Turn binds: delta/old runs.
        78  USAGE-COL-SESSION-ID                  VALUE 0.
        78  USAGE-COL-TURN-ID                     VALUE 1.
        78  USAGE-COL-EVENT-TIME                  VALUE 2.
-       78  USAGE-COL-HAS-TURN                    VALUE 3.
        78  USAGE-COL-REQUEST-ID                  VALUE 4.
        78  USAGE-COL-RAW-INPUT                   VALUE 5.
-       78  USAGE-COL-RAW-OUTPUT                  VALUE 6.
-       78  USAGE-COL-RAW-CACHED                  VALUE 7.
-       78  USAGE-COL-REPORTED-FIRST              VALUE 8.
+       78  USAGE-AMOUNT-COUNT                    VALUE 7.
+       78  USAGE-TIME-COUNT                      VALUE 2.
+       78  TURN-AMOUNT-COUNT                     VALUE 8.
        78  METRIC-COUNT                          VALUE 4.
 
-      *> First position of each four-metric run; add METRIC-INDEX - 1.
+      *> First position of each contiguous four-metric run.
       *>  REQUEST-COL-PREVIOUS-FIRST: columns of the usage_requests
       *>                                lookup
       *>  SAVE-REQUEST-BIND-FIRST:      cumulative values in
       *>                                usage_requests
       *>  SAVE-TURN-BIND-DELTA-FIRST:   per-request deltas in
       *>                                migration_turns
-      *>  SAVE-TURN-BIND-OLD-FIRST:     retained pre-migration totals
       *>  SAVE-DELTA-BIND-FIRST:        corrections in
       *>                                migration_deltas
        78  REQUEST-COL-PREVIOUS-FIRST            VALUE 0.
        78  SAVE-REQUEST-BIND-FIRST               VALUE 3.
        78  SAVE-TURN-BIND-DELTA-FIRST            VALUE 4.
-       78  SAVE-TURN-BIND-OLD-FIRST              VALUE 8.
        78  SAVE-DELTA-BIND-FIRST                 VALUE 3.
 
       *> Prepared statements; RECOUNT-USAGE owns their lifecycle.
@@ -72,7 +69,6 @@
        01  ROW-STATUS                            BINARY-LONG.
            88  USAGE-ROW-AVAILABLE                  VALUE 100.
            88  USAGE-STEP-COMPLETE                  VALUE 101.
-       01  BIND-INDEX                            BINARY-LONG.
        01  METRIC-INDEX                          BINARY-LONG.
 
       *> Row state for the usage event stream.
@@ -81,28 +77,76 @@
        01  TURN-ID                               PIC X(4096).
        01  REQUEST-ID                            PIC X(8192).
        01  NATIVE-REQUEST-ID                     PIC X(4096).
-       01  EVENT-TIME                            BINARY-DOUBLE SIGNED.
-       01  TURN-FLAG                             BINARY-DOUBLE SIGNED.
-           88  EVENT-HAS-TURN                       VALUE 1.
+      *> The C transport reads adjacent SQLite int64 columns into
+      *> these contiguous native signed 64-bit groups, with no padding.
+       01  USAGE-TIME.
+           05  EVENT-TIME                       BINARY-DOUBLE SIGNED.
+           05  TURN-FLAG                        BINARY-DOUBLE SIGNED.
+               88  EVENT-HAS-TURN                  VALUE 1.
        01  LAST-INPUT-TOTAL                      BINARY-DOUBLE SIGNED
                                                        VALUE 0.
        01  LAST-OUTPUT-TOTAL                     BINARY-DOUBLE SIGNED
                                                        VALUE 0.
-       01  RAW-INPUT-TOKENS                      BINARY-DOUBLE SIGNED.
-       01  RAW-OUTPUT-TOKENS                     BINARY-DOUBLE SIGNED.
-       01  RAW-CACHED-TOKENS                     BINARY-DOUBLE SIGNED.
+       01  USAGE-AMOUNTS.
+           05  RAW-INPUT-TOKENS                 BINARY-DOUBLE SIGNED.
+           05  RAW-OUTPUT-TOKENS                BINARY-DOUBLE SIGNED.
+           05  RAW-CACHED-TOKENS                BINARY-DOUBLE SIGNED.
+           05  REPORTED-AMOUNTS.
+               10  REPORTED-AMOUNT OCCURS 4 TIMES
+                                               BINARY-DOUBLE SIGNED.
 
-      *> Billing amounts by metric: 1 input, 2 output, 3 cached,
-      *> 4 requests. REPORTED is what the event carried, PREVIOUS what
-      *> earlier events for the same request already stored, DELTA the
-      *> increment to apply, and OLD the pre-migration total retained
-      *> for version 7 corrections.
+      *> Metrics: input, output, cached, requests. Group moves copy
+      *> identical native int64 layouts. Billing arithmetic stays here.
        01  BILLING-AMOUNTS.
-           05  AMOUNT OCCURS 4 TIMES.
-               10  REPORTED-AMOUNT               BINARY-DOUBLE SIGNED.
-               10  PREVIOUS-AMOUNT               BINARY-DOUBLE SIGNED.
-               10  DELTA-AMOUNT                  BINARY-DOUBLE SIGNED.
-               10  OLD-AMOUNT                    BINARY-DOUBLE SIGNED.
+           05  PREVIOUS-AMOUNTS.
+               10  PREVIOUS-AMOUNT OCCURS 4 TIMES
+                                               BINARY-DOUBLE SIGNED.
+           05  DELTA-AMOUNTS.
+               10  DELTA-AMOUNT OCCURS 4 TIMES
+                                               BINARY-DOUBLE SIGNED.
+           05  OLD-AMOUNTS.
+               10  OLD-AMOUNT OCCURS 4 TIMES    BINARY-DOUBLE SIGNED.
+       01  CORRECTION-AMOUNTS.
+           05  CORRECTION-AMOUNT OCCURS 4 TIMES
+                                               BINARY-DOUBLE SIGNED.
+
+      *> Keep adjacent reports in memory. Flush before changing keys
+      *> and at end of stream; nonadjacent requests still use SQLite.
+      *> Delta rows retain each event's timestamp for hourly correction.
+       01  SESSION-KEY                          PIC X(4097)
+                                                   VALUE LOW-VALUES.
+       01  REQUEST-KEY                          PIC X(8193).
+       01  TURN-KEY                             PIC X(4097).
+       01  REQUEST-CACHE-FLAG                   PIC X VALUE 'N'.
+           88  REQUEST-CACHE-ACTIVE                VALUE 'Y'.
+       01  REQUEST-CACHE-ID                     PIC X(8192).
+       01  REQUEST-CACHE-SESSION                PIC X(4096).
+       01  REQUEST-CACHE-AMOUNTS.
+           05  CACHED-REQUEST-AMOUNT OCCURS 4 TIMES
+                                               BINARY-DOUBLE SIGNED.
+       01  TURN-CACHE-FLAG                      PIC X VALUE 'N'.
+           88  TURN-CACHE-ACTIVE                   VALUE 'Y'.
+       01  TURN-CACHE-ID                        PIC X(4096).
+       01  TURN-CACHE-SESSION                   PIC X(4096).
+
+      *> Slice lengths delimit SQLite text; tails are never inspected.
+       01  SESSION-ID-LENGTH                    BINARY-LONG VALUE 1.
+       01  LAST-SESSION-ID-LENGTH               BINARY-LONG VALUE 1.
+       01  TURN-ID-LENGTH                       BINARY-LONG VALUE 1.
+       01  NATIVE-REQUEST-ID-LENGTH             BINARY-LONG VALUE 1.
+       01  REQUEST-ID-LENGTH                    BINARY-LONG VALUE 1.
+       01  REQUEST-CACHE-ID-LENGTH              BINARY-LONG VALUE 1.
+       01  REQUEST-CACHE-SESSION-LENGTH         BINARY-LONG VALUE 1.
+       01  TURN-CACHE-ID-LENGTH                 BINARY-LONG VALUE 1.
+       01  TURN-CACHE-SESSION-LENGTH            BINARY-LONG VALUE 1.
+
+       01  TURN-CACHE-AMOUNTS.
+           05  CACHED-TURN-DELTAS.
+               10  CACHED-TURN-DELTA OCCURS 4 TIMES
+                                               BINARY-DOUBLE SIGNED.
+           05  CACHED-TURN-OLDS.
+               10  CACHED-TURN-OLD OCCURS 4 TIMES
+                                               BINARY-DOUBLE SIGNED.
 
        LINKAGE SECTION.
        01  LS-MIGRATION-DIR                      PIC X(4096).
@@ -322,6 +366,12 @@
            IF NOT USAGE-STEP-COMPLETE
                PERFORM FAIL-MIGRATION-STEP
            END-IF
+           IF REQUEST-CACHE-ACTIVE
+               PERFORM PERSIST-CACHED-REQUEST
+           END-IF
+           IF TURN-CACHE-ACTIVE
+               PERFORM PERSIST-CACHED-TURN
+           END-IF
            IF LAST-SESSION-ID NOT = SPACES
                PERFORM PERSIST-LAST-REPORT
            END-IF
@@ -345,32 +395,30 @@
            PERFORM CHECK-STEP-RESULT.
 
        READ-USAGE-ROW.
-           CALL STATIC "bf_text" USING BY VALUE ROW-STATEMENT
+           CALL STATIC "bf_text_slice" USING BY VALUE ROW-STATEMENT
                USAGE-COL-SESSION-ID
                BY REFERENCE SESSION-ID
                BY VALUE LENGTH OF SESSION-ID
+               BY REFERENCE SESSION-ID-LENGTH
                RETURNING CALL-STATUS
            PERFORM CHECK-STEP-RESULT
-           IF SESSION-ID NOT = LAST-SESSION-ID
+           IF SESSION-ID(1:SESSION-ID-LENGTH) NOT =
+               LAST-SESSION-ID(1:LAST-SESSION-ID-LENGTH)
                IF LAST-SESSION-ID NOT = SPACES
                    PERFORM PERSIST-LAST-REPORT
                END-IF
-               MOVE SESSION-ID TO LAST-SESSION-ID
+               MOVE SESSION-ID(1:SESSION-ID-LENGTH)
+                   TO LAST-SESSION-ID
+               MOVE SESSION-ID-LENGTH TO LAST-SESSION-ID-LENGTH
                MOVE 0 TO LAST-INPUT-TOTAL LAST-OUTPUT-TOTAL
+               STRING FUNCTION TRIM(
+                   SESSION-ID(1:SESSION-ID-LENGTH)) x'00'
+                   INTO SESSION-KEY
+               END-STRING
            END-IF
-           CALL STATIC "bf_int" USING BY VALUE ROW-STATEMENT
-               USAGE-COL-RAW-INPUT
-               BY REFERENCE RAW-INPUT-TOKENS
-               RETURNING CALL-STATUS
-           PERFORM CHECK-STEP-RESULT
-           CALL STATIC "bf_int" USING BY VALUE ROW-STATEMENT
-               USAGE-COL-RAW-OUTPUT
-               BY REFERENCE RAW-OUTPUT-TOKENS
-               RETURNING CALL-STATUS
-           PERFORM CHECK-STEP-RESULT
-           CALL STATIC "bf_int" USING BY VALUE ROW-STATEMENT
-               USAGE-COL-RAW-CACHED
-               BY REFERENCE RAW-CACHED-TOKENS
+           CALL STATIC "bf_ints" USING BY VALUE ROW-STATEMENT
+               USAGE-COL-RAW-INPUT USAGE-AMOUNT-COUNT
+               BY REFERENCE USAGE-AMOUNTS
                RETURNING CALL-STATUS
            PERFORM CHECK-STEP-RESULT
            INITIALIZE BILLING-AMOUNTS
@@ -381,144 +429,202 @@
                MOVE RAW-CACHED-TOKENS TO OLD-AMOUNT (3)
                MOVE 1 TO OLD-AMOUNT (4)
            ELSE
-               COMPUTE OLD-AMOUNT (2) = FUNCTION MAX(0,
-                   RAW-OUTPUT-TOKENS - LAST-OUTPUT-TOTAL)
-               COMPUTE LAST-OUTPUT-TOTAL = FUNCTION MAX(
-                   LAST-OUTPUT-TOTAL, RAW-OUTPUT-TOKENS)
+               IF RAW-OUTPUT-TOKENS > LAST-OUTPUT-TOTAL
+                   MOVE RAW-OUTPUT-TOKENS TO OLD-AMOUNT (2)
+                   SUBTRACT LAST-OUTPUT-TOTAL FROM OLD-AMOUNT (2)
+                   MOVE RAW-OUTPUT-TOKENS TO LAST-OUTPUT-TOTAL
+               END-IF
            END-IF
            MOVE RAW-INPUT-TOKENS TO LAST-INPUT-TOTAL
-           CALL STATIC "bf_int" USING BY VALUE ROW-STATEMENT
-               USAGE-COL-HAS-TURN
-               BY REFERENCE TURN-FLAG
+           CALL STATIC "bf_ints" USING BY VALUE ROW-STATEMENT
+               USAGE-COL-EVENT-TIME USAGE-TIME-COUNT
+               BY REFERENCE USAGE-TIME
                RETURNING CALL-STATUS
            PERFORM CHECK-STEP-RESULT
            IF NOT EVENT-HAS-TURN
                EXIT PARAGRAPH
            END-IF
-           CALL STATIC "bf_text" USING BY VALUE ROW-STATEMENT
+           CALL STATIC "bf_text_slice" USING BY VALUE ROW-STATEMENT
                USAGE-COL-TURN-ID
                BY REFERENCE TURN-ID
                BY VALUE LENGTH OF TURN-ID
+               BY REFERENCE TURN-ID-LENGTH
                RETURNING CALL-STATUS
            PERFORM CHECK-STEP-RESULT
-           CALL STATIC "bf_int" USING BY VALUE ROW-STATEMENT
-               USAGE-COL-EVENT-TIME
-               BY REFERENCE EVENT-TIME
-               RETURNING CALL-STATUS
-           PERFORM CHECK-STEP-RESULT
-           CALL STATIC "bf_text" USING BY VALUE ROW-STATEMENT
+           CALL STATIC "bf_text_slice" USING BY VALUE ROW-STATEMENT
                USAGE-COL-REQUEST-ID
                BY REFERENCE NATIVE-REQUEST-ID
                BY VALUE LENGTH OF NATIVE-REQUEST-ID
+               BY REFERENCE NATIVE-REQUEST-ID-LENGTH
                RETURNING CALL-STATUS
            PERFORM CHECK-STEP-RESULT
-           MOVE SPACES TO REQUEST-ID
-           IF NATIVE-REQUEST-ID = SPACES
-               STRING 'legacy:' FUNCTION TRIM(TURN-ID)
+           IF NATIVE-REQUEST-ID(1:NATIVE-REQUEST-ID-LENGTH) = SPACES
+               STRING 'legacy:' FUNCTION TRIM(
+                   TURN-ID(1:TURN-ID-LENGTH))
                    INTO REQUEST-ID
                END-STRING
+               MOVE FUNCTION LENGTH(FUNCTION TRIM(
+                   TURN-ID(1:TURN-ID-LENGTH))) TO REQUEST-ID-LENGTH
+               ADD 7 TO REQUEST-ID-LENGTH
            ELSE
-               STRING 'request:' FUNCTION TRIM(NATIVE-REQUEST-ID)
+               STRING 'request:' FUNCTION TRIM(
+                   NATIVE-REQUEST-ID(1:NATIVE-REQUEST-ID-LENGTH))
                    INTO REQUEST-ID
                END-STRING
+               MOVE FUNCTION LENGTH(FUNCTION TRIM(
+                   NATIVE-REQUEST-ID(1:NATIVE-REQUEST-ID-LENGTH)))
+                   TO REQUEST-ID-LENGTH
+               ADD 8 TO REQUEST-ID-LENGTH
            END-IF
+           IF NOT REQUEST-CACHE-ACTIVE OR
+               REQUEST-ID(1:REQUEST-ID-LENGTH) NOT =
+                   REQUEST-CACHE-ID(1:REQUEST-CACHE-ID-LENGTH) OR
+               SESSION-ID(1:SESSION-ID-LENGTH) NOT =
+                   REQUEST-CACHE-SESSION(
+                       1:REQUEST-CACHE-SESSION-LENGTH)
+               PERFORM CHANGE-REQUEST-CACHE
+           END-IF
+           MOVE REQUEST-CACHE-AMOUNTS TO PREVIOUS-AMOUNTS
+           IF NATIVE-REQUEST-ID(1:NATIVE-REQUEST-ID-LENGTH) = SPACES AND
+               PREVIOUS-AMOUNT (1) NOT = RAW-INPUT-TOKENS
+               INITIALIZE PREVIOUS-AMOUNTS
+           END-IF
+           PERFORM VARYING METRIC-INDEX FROM 1 BY 1
+               UNTIL METRIC-INDEX > METRIC-COUNT
+               IF REPORTED-AMOUNT (METRIC-INDEX) >
+                   PREVIOUS-AMOUNT (METRIC-INDEX)
+                   MOVE REPORTED-AMOUNT (METRIC-INDEX)
+                       TO DELTA-AMOUNT (METRIC-INDEX)
+                   SUBTRACT PREVIOUS-AMOUNT (METRIC-INDEX)
+                       FROM DELTA-AMOUNT (METRIC-INDEX)
+                   MOVE REPORTED-AMOUNT (METRIC-INDEX)
+                       TO PREVIOUS-AMOUNT (METRIC-INDEX)
+               END-IF
+               MOVE PREVIOUS-AMOUNT (METRIC-INDEX)
+                   TO CACHED-REQUEST-AMOUNT (METRIC-INDEX)
+           END-PERFORM
+           PERFORM CACHE-TURN-USAGE
+           IF ADJUST-HOURS-NEEDED
+               PERFORM PERSIST-EVENT-DELTA
+           END-IF.
+
+       CHANGE-REQUEST-CACHE.
+           IF REQUEST-CACHE-ACTIVE
+               PERFORM PERSIST-CACHED-REQUEST
+           END-IF
+           SET REQUEST-CACHE-ACTIVE TO TRUE
+           MOVE REQUEST-ID(1:REQUEST-ID-LENGTH) TO REQUEST-CACHE-ID
+           MOVE REQUEST-ID-LENGTH TO REQUEST-CACHE-ID-LENGTH
+           MOVE SESSION-ID(1:SESSION-ID-LENGTH)
+               TO REQUEST-CACHE-SESSION
+           MOVE SESSION-ID-LENGTH TO REQUEST-CACHE-SESSION-LENGTH
+           INITIALIZE REQUEST-CACHE-AMOUNTS
+           STRING FUNCTION TRIM(
+               REQUEST-ID(1:REQUEST-ID-LENGTH)) x'00'
+               INTO REQUEST-KEY
+           END-STRING
            CALL STATIC "bf_bind_text" USING
                BY VALUE REQUEST-STATEMENT 1
-               BY REFERENCE FUNCTION CONCATENATE(
-                   FUNCTION TRIM(SESSION-ID), x'00')
+               BY REFERENCE SESSION-KEY
                RETURNING CALL-STATUS
            PERFORM CHECK-STEP-RESULT
            CALL STATIC "bf_bind_text" USING
                BY VALUE REQUEST-STATEMENT 2
-               BY REFERENCE FUNCTION CONCATENATE(
-                   FUNCTION TRIM(REQUEST-ID), x'00')
+               BY REFERENCE REQUEST-KEY
                RETURNING CALL-STATUS
            PERFORM CHECK-STEP-RESULT
            CALL STATIC "bf_next" USING BY VALUE REQUEST-STATEMENT
                RETURNING ROW-STATUS
            EVALUATE TRUE
                WHEN USAGE-ROW-AVAILABLE
-                   PERFORM VARYING METRIC-INDEX FROM 1 BY 1
-                       UNTIL METRIC-INDEX > METRIC-COUNT
-                       COMPUTE BIND-INDEX =
-                           REQUEST-COL-PREVIOUS-FIRST
-                           + METRIC-INDEX - 1
-                       CALL STATIC "bf_int" USING
-                           BY VALUE REQUEST-STATEMENT BIND-INDEX
-                           BY REFERENCE
-                               PREVIOUS-AMOUNT (METRIC-INDEX)
-                           RETURNING CALL-STATUS
-                       PERFORM CHECK-STEP-RESULT
-                   END-PERFORM
+                   CALL STATIC "bf_ints" USING
+                       BY VALUE REQUEST-STATEMENT
+                           REQUEST-COL-PREVIOUS-FIRST METRIC-COUNT
+                       BY REFERENCE REQUEST-CACHE-AMOUNTS
+                       RETURNING CALL-STATUS
+                   PERFORM CHECK-STEP-RESULT
                WHEN USAGE-STEP-COMPLETE
                    CONTINUE
                WHEN OTHER
                    PERFORM FAIL-MIGRATION-STEP
            END-EVALUATE
-           CALL STATIC "bf_reset" USING BY VALUE
-               REQUEST-STATEMENT
+           CALL STATIC "bf_reset" USING BY VALUE REQUEST-STATEMENT
                RETURNING CALL-STATUS
            PERFORM CHECK-STEP-RESULT
-           IF NATIVE-REQUEST-ID = SPACES AND
-               PREVIOUS-AMOUNT (1) NOT = RAW-INPUT-TOKENS
-               PERFORM VARYING METRIC-INDEX FROM 1 BY 1
-                   UNTIL METRIC-INDEX > METRIC-COUNT
-                   MOVE 0 TO PREVIOUS-AMOUNT (METRIC-INDEX)
-               END-PERFORM
+           CALL STATIC "bf_bind_text" USING BY VALUE SAVE-REQUEST 1
+               BY REFERENCE SESSION-KEY
+               RETURNING CALL-STATUS
+           PERFORM CHECK-STEP-RESULT
+           CALL STATIC "bf_bind_text" USING BY VALUE SAVE-REQUEST 2
+               BY REFERENCE REQUEST-KEY
+               RETURNING CALL-STATUS
+           PERFORM CHECK-STEP-RESULT.
+
+       PERSIST-CACHED-REQUEST.
+           CALL STATIC "bf_bind_ints" USING
+               BY VALUE SAVE-REQUEST SAVE-REQUEST-BIND-FIRST
+                   METRIC-COUNT
+               BY REFERENCE REQUEST-CACHE-AMOUNTS
+               RETURNING CALL-STATUS
+           PERFORM CHECK-STEP-RESULT
+           CALL STATIC "bf_run" USING BY VALUE SAVE-REQUEST
+               RETURNING CALL-STATUS
+           PERFORM CHECK-STEP-RESULT.
+
+       CACHE-TURN-USAGE.
+           IF NOT TURN-CACHE-ACTIVE OR
+               TURN-ID(1:TURN-ID-LENGTH) NOT =
+                   TURN-CACHE-ID(1:TURN-CACHE-ID-LENGTH) OR
+               SESSION-ID(1:SESSION-ID-LENGTH) NOT =
+                   TURN-CACHE-SESSION(1:TURN-CACHE-SESSION-LENGTH)
+               IF TURN-CACHE-ACTIVE
+                   PERFORM PERSIST-CACHED-TURN
+               END-IF
+               SET TURN-CACHE-ACTIVE TO TRUE
+               MOVE TURN-ID(1:TURN-ID-LENGTH) TO TURN-CACHE-ID
+               MOVE TURN-ID-LENGTH TO TURN-CACHE-ID-LENGTH
+               MOVE SESSION-ID(1:SESSION-ID-LENGTH)
+                   TO TURN-CACHE-SESSION
+               MOVE SESSION-ID-LENGTH TO TURN-CACHE-SESSION-LENGTH
+               INITIALIZE TURN-CACHE-AMOUNTS
+               STRING FUNCTION TRIM(TURN-ID(1:TURN-ID-LENGTH))
+                   x'00' INTO TURN-KEY
+               END-STRING
+               CALL STATIC "bf_bind_text" USING BY VALUE SAVE-TURN 1
+                   BY REFERENCE TURN-KEY
+                   RETURNING CALL-STATUS
+               PERFORM CHECK-STEP-RESULT
+               CALL STATIC "bf_bind_text" USING BY VALUE SAVE-TURN 2
+                   BY REFERENCE SESSION-KEY
+                   RETURNING CALL-STATUS
+               PERFORM CHECK-STEP-RESULT
+               CALL STATIC "bf_bind_int" USING BY VALUE SAVE-TURN 3
+                   BY REFERENCE EVENT-TIME
+                   RETURNING CALL-STATUS
+               PERFORM CHECK-STEP-RESULT
            END-IF
            PERFORM VARYING METRIC-INDEX FROM 1 BY 1
                UNTIL METRIC-INDEX > METRIC-COUNT
-               COMPUTE BIND-INDEX = USAGE-COL-REPORTED-FIRST
-                   + METRIC-INDEX - 1
-               CALL STATIC "bf_int" USING BY VALUE ROW-STATEMENT
-                   BIND-INDEX
-                   BY REFERENCE REPORTED-AMOUNT (METRIC-INDEX)
-                   RETURNING CALL-STATUS
-               PERFORM CHECK-STEP-RESULT
-               COMPUTE DELTA-AMOUNT (METRIC-INDEX) =
-                   FUNCTION MAX(0,
-                   REPORTED-AMOUNT (METRIC-INDEX)
-                   - PREVIOUS-AMOUNT (METRIC-INDEX))
-               COMPUTE PREVIOUS-AMOUNT (METRIC-INDEX) =
-                   FUNCTION MAX(
-                   REPORTED-AMOUNT (METRIC-INDEX),
-                   PREVIOUS-AMOUNT (METRIC-INDEX))
-           END-PERFORM
-           PERFORM PERSIST-USAGE.
+               ADD DELTA-AMOUNT (METRIC-INDEX)
+                   TO CACHED-TURN-DELTA (METRIC-INDEX)
+               ADD OLD-AMOUNT (METRIC-INDEX)
+                   TO CACHED-TURN-OLD (METRIC-INDEX)
+           END-PERFORM.
 
-       PERSIST-USAGE.
-           CALL STATIC "bf_bind_text" USING
-               BY VALUE SAVE-REQUEST 1
-               BY REFERENCE FUNCTION CONCATENATE(
-                   FUNCTION TRIM(SESSION-ID), x'00')
+       PERSIST-CACHED-TURN.
+           CALL STATIC "bf_bind_ints" USING
+               BY VALUE SAVE-TURN SAVE-TURN-BIND-DELTA-FIRST
+                   TURN-AMOUNT-COUNT
+               BY REFERENCE TURN-CACHE-AMOUNTS
                RETURNING CALL-STATUS
            PERFORM CHECK-STEP-RESULT
-           CALL STATIC "bf_bind_text" USING
-               BY VALUE SAVE-REQUEST 2
-               BY REFERENCE FUNCTION CONCATENATE(
-                   FUNCTION TRIM(REQUEST-ID), x'00')
+           CALL STATIC "bf_run" USING BY VALUE SAVE-TURN
                RETURNING CALL-STATUS
-           PERFORM CHECK-STEP-RESULT
-           CALL STATIC "bf_bind_text" USING
-               BY VALUE SAVE-TURN 1
-               BY REFERENCE FUNCTION CONCATENATE(
-                   FUNCTION TRIM(TURN-ID), x'00')
-               RETURNING CALL-STATUS
-           PERFORM CHECK-STEP-RESULT
-           CALL STATIC "bf_bind_text" USING
-               BY VALUE SAVE-TURN 2
-               BY REFERENCE FUNCTION CONCATENATE(
-                   FUNCTION TRIM(SESSION-ID), x'00')
-               RETURNING CALL-STATUS
-           PERFORM CHECK-STEP-RESULT
-           CALL STATIC "bf_bind_int" USING BY VALUE SAVE-TURN 3
-               BY REFERENCE EVENT-TIME
-               RETURNING CALL-STATUS
-           PERFORM CHECK-STEP-RESULT
-           CALL STATIC "bf_bind_text" USING
-               BY VALUE SAVE-DELTA 1
-               BY REFERENCE FUNCTION CONCATENATE(
-                   FUNCTION TRIM(SESSION-ID), x'00')
+           PERFORM CHECK-STEP-RESULT.
+
+       PERSIST-EVENT-DELTA.
+           CALL STATIC "bf_bind_text" USING BY VALUE SAVE-DELTA 1
+               BY REFERENCE SESSION-KEY
                RETURNING CALL-STATUS
            PERFORM CHECK-STEP-RESULT
            CALL STATIC "bf_bind_int" USING BY VALUE SAVE-DELTA 2
@@ -527,48 +633,19 @@
            PERFORM CHECK-STEP-RESULT
            PERFORM VARYING METRIC-INDEX FROM 1 BY 1
                UNTIL METRIC-INDEX > METRIC-COUNT
-               COMPUTE BIND-INDEX = SAVE-REQUEST-BIND-FIRST
-                   + METRIC-INDEX - 1
-               CALL STATIC "bf_bind_int" USING
-                   BY VALUE SAVE-REQUEST BIND-INDEX
-                   BY REFERENCE PREVIOUS-AMOUNT (METRIC-INDEX)
-                   RETURNING CALL-STATUS
-               PERFORM CHECK-STEP-RESULT
-               COMPUTE BIND-INDEX = SAVE-TURN-BIND-DELTA-FIRST
-                   + METRIC-INDEX - 1
-               CALL STATIC "bf_bind_int" USING
-                   BY VALUE SAVE-TURN BIND-INDEX
-                   BY REFERENCE DELTA-AMOUNT (METRIC-INDEX)
-                   RETURNING CALL-STATUS
-               PERFORM CHECK-STEP-RESULT
-               COMPUTE BIND-INDEX = SAVE-TURN-BIND-OLD-FIRST
-                   + METRIC-INDEX - 1
-               CALL STATIC "bf_bind_int" USING
-                   BY VALUE SAVE-TURN BIND-INDEX
-                   BY REFERENCE OLD-AMOUNT (METRIC-INDEX)
-                   RETURNING CALL-STATUS
-               PERFORM CHECK-STEP-RESULT
-               COMPUTE BIND-INDEX = SAVE-DELTA-BIND-FIRST
-                   + METRIC-INDEX - 1
-               COMPUTE QUERY-VALUE = DELTA-AMOUNT (METRIC-INDEX)
-                   - OLD-AMOUNT (METRIC-INDEX)
-               CALL STATIC "bf_bind_int" USING
-                   BY VALUE SAVE-DELTA BIND-INDEX
-                   BY REFERENCE QUERY-VALUE
-                   RETURNING CALL-STATUS
-               PERFORM CHECK-STEP-RESULT
+               MOVE DELTA-AMOUNT (METRIC-INDEX)
+                   TO CORRECTION-AMOUNT (METRIC-INDEX)
+               SUBTRACT OLD-AMOUNT (METRIC-INDEX)
+                   FROM CORRECTION-AMOUNT (METRIC-INDEX)
            END-PERFORM
-           CALL STATIC "bf_run" USING BY VALUE SAVE-REQUEST
+           CALL STATIC "bf_bind_ints" USING
+               BY VALUE SAVE-DELTA SAVE-DELTA-BIND-FIRST METRIC-COUNT
+               BY REFERENCE CORRECTION-AMOUNTS
                RETURNING CALL-STATUS
            PERFORM CHECK-STEP-RESULT
-           CALL STATIC "bf_run" USING BY VALUE SAVE-TURN
+           CALL STATIC "bf_run" USING BY VALUE SAVE-DELTA
                RETURNING CALL-STATUS
-           PERFORM CHECK-STEP-RESULT
-           IF ADJUST-HOURS-NEEDED
-               CALL STATIC "bf_run" USING BY VALUE SAVE-DELTA
-                   RETURNING CALL-STATUS
-               PERFORM CHECK-STEP-RESULT
-           END-IF.
+           PERFORM CHECK-STEP-RESULT.
 
        PERSIST-LAST-REPORT.
            CALL STATIC "bf_bind_int" USING
@@ -622,4 +699,3 @@
       *> back.
            MOVE MIGRATION-FAILED TO RETURN-CODE
            GOBACK.
-

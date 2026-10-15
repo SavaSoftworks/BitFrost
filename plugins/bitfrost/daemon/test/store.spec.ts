@@ -694,6 +694,63 @@ test('legacy usage groups only adjacent equal reports within a turn', (t) => {
   assert.deepEqual(store.summary(s).usage, { inputTokens: 400, outputTokens: 30, cachedTokens: 0, requests: 3 })
 })
 
+test('migration flushes adjacent reports across request, turn and session changes', (t) => {
+  const { store, file, session } = setup(t)
+  for (const sid of ['a', 'b']) {
+    const s = session(sid)
+    s.push({ type: 'turn_started', turnId: `${sid}-first` })
+    const report = (requestId: string, inputTokens: number, outputTokens: number, cachedInputTokens: number) =>
+      s.push({ type: 'usage', requestId, inputTokens, outputTokens, cachedInputTokens })
+    report('one', 100, 10, 20)
+    report('one', 100, 15, 20)
+    report('two', 200, 20, 40)
+    report('one', 100, 25, 25) // Return to an already-flushed request.
+    finish(s, `${sid}-first`)
+    s.push({ type: 'turn_started', turnId: `${sid}-second` })
+    report('one', 100, 30, 25) // The same request continues in another turn.
+    report('three', 50, 3, 0)
+    report('three', 50, 2, 0) // A decreasing report adds nothing.
+    finish(s, `${sid}-second`)
+  }
+  store.db.exec('PRAGMA user_version=7')
+  migrate(file)
+  const upgraded = new Store(file)
+  try {
+    for (const sid of ['a', 'b']) {
+      assert.deepEqual(upgraded.summary(Session.load(sid, upgraded)!).usage,
+        { inputTokens: 350, outputTokens: 53, cachedTokens: 65, requests: 3 })
+    }
+    assert.equal(upgraded.db.prepare('SELECT COUNT(*) AS n FROM usage_requests').get()!.n, 6)
+  } finally { upgraded.close() }
+})
+
+test('migration keeps per-event hour corrections when adjacent reports span hours', (t) => {
+  const { store, file } = setup(t)
+  const first = hourOf(Date.now()), second = first + 3600000, ancient = first - 400 * 86400000
+  store.db.prepare("INSERT INTO sessions(id,harness,model,created_at) VALUES ('s','fake','m',?)").run(first)
+  store.db.prepare(`INSERT INTO turns(id,session_id,seq_start,started_at,ended_at,status,input_tokens,output_tokens,cached_tokens,requests)
+    VALUES ('t','s',1,?,?,'completed',300,30,50,2)`).run(first, second + 1000)
+  const event = store.db.prepare("INSERT INTO events(session_id,seq,ts,type,turn_id,body) VALUES ('s',?,?,?,'t',?)")
+  event.run(1, first, 'turn_started', '{}')
+  event.run(2, first + 1000, 'usage', JSON.stringify({ requestId: 'r', inputTokens: 100, outputTokens: 10, cachedInputTokens: 20 }))
+  event.run(3, second + 1000, 'usage', JSON.stringify({ requestId: 'r', inputTokens: 200, outputTokens: 20, cachedInputTokens: 30 }))
+  const hour = store.db.prepare(`INSERT INTO usage_hours(harness,model,hour,input_tokens,output_tokens,cached_tokens,requests,first_at,last_at,updated_at)
+    VALUES ('fake','m',?,?,?,?,?,?,?,1)`)
+  hour.run(first, 100, 10, 20, 1, first, first + 1000)
+  hour.run(second, 200, 20, 30, 1, second, second + 1000)
+  hour.run(ancient, 700, 70, 0, 7, ancient, ancient)
+  store.db.exec('PRAGMA user_version=7')
+  migrate(file)
+  const upgraded = new Store(file)
+  try {
+    const rows = upgraded.db.prepare('SELECT hour,input_tokens,output_tokens,cached_tokens,requests FROM usage_hours ORDER BY hour').all()
+    assert.deepEqual(rows.map((r) => [r.hour, r.input_tokens, r.output_tokens, r.cached_tokens, r.requests]),
+      [[ancient, 700, 70, 0, 7], [first, 100, 10, 20, 1], [second, 100, 10, 10, 0]])
+    assert.deepEqual(upgraded.summary(Session.load('s', upgraded)!).usage,
+      { inputTokens: 200, outputTokens: 20, cachedTokens: 30, requests: 1 })
+  } finally { upgraded.close() }
+})
+
 
 test('an older persisted schema refuses startup without changing structure or data', (t) => {
   const { store, file } = setup(t)

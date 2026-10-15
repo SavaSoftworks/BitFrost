@@ -84,11 +84,31 @@ int bf_int(sqlite3_stmt *stmt, int col, long long *value) {
     *value = sqlite3_column_int64(stmt, col);
     return 0;
 }
+/* Contiguous native signed 64-bit fields only: no COBOL numeric conversion.
+ * These transport helpers keep billing decisions in the COBOL handler. */
+int bf_ints(sqlite3_stmt *stmt, int first, int count, long long *values) {
+    if (first < 0 || count < 0 || first > sqlite3_column_count(stmt) ||
+        count > sqlite3_column_count(stmt) - first)
+        return fail("Invalid integer column range");
+    for (int i = 0; i < count; ++i) values[i] = sqlite3_column_int64(stmt, first + i);
+    return 0;
+}
 int bf_text(sqlite3_stmt *stmt, int col, char *out, int size) {
     int n = sqlite3_column_bytes(stmt, col);
     memset(out, ' ', (size_t)size);
     if (n >= size) return fail("Database identifier exceeds migration buffer");
     if (n) memcpy(out, sqlite3_column_text(stmt, col), (size_t)n);
+    return 0;
+}
+/* A counted COBOL slice avoids clearing/scanning a 4 KiB field per event.
+ * The caller must use only out[0..length), never the uninitialized tail.
+ * Represent empty text as one space, matching padded COBOL comparisons. */
+int bf_text_slice(sqlite3_stmt *stmt, int col, char *out, int size, int *length) {
+    int n = sqlite3_column_bytes(stmt, col);
+    if (n >= size) return fail("Database identifier exceeds migration buffer");
+    if (n) memcpy(out, sqlite3_column_text(stmt, col), (size_t)n);
+    else out[0] = ' ';
+    *length = n ? n : 1;
     return 0;
 }
 int bf_bind_text(sqlite3_stmt *stmt, int col, const char *text) {
@@ -98,6 +118,16 @@ int bf_bind_int(sqlite3_stmt *stmt, int col, const long long *value) {
     /* GnuCOBOL 3.1 defaults BY VALUE integers to 32 bits. Pass all SQLite
      * 64-bit values by reference, in both directions, across this boundary. */
     return result(sqlite3_bind_int64(stmt, col, *value));
+}
+int bf_bind_ints(sqlite3_stmt *stmt, int first, int count, const long long *values) {
+    if (first < 1 || count < 0 || first - 1 > sqlite3_bind_parameter_count(stmt) ||
+        count > sqlite3_bind_parameter_count(stmt) - (first - 1))
+        return fail("Invalid integer parameter range");
+    for (int i = 0; i < count; ++i) {
+        int rc = sqlite3_bind_int64(stmt, first + i, values[i]);
+        if (rc != SQLITE_OK) return result(rc);
+    }
+    return 0;
 }
 int bf_run(sqlite3_stmt *stmt) {
     int rc = sqlite3_step(stmt);
@@ -123,6 +153,17 @@ static int compare_local(const struct tm *a, const struct tm *b) {
     return 0;
 }
 
+/* One civil-hour entry per connection, including the TZ environment value.
+ * This bounds memory independently of history size. Long TZ values bypass
+ * caching. A hit still calls localtime_r; repeated/skipped-hour selection
+ * below is unchanged and is run on every miss. */
+struct hour_cache {
+    int valid, has_tz;
+    struct tm local;
+    char timezone[256];
+    sqlite3_int64 millis;
+};
+
 /* Match JavaScript's local Date constructor: choose the earlier occurrence
  * of a repeated hour, or advance through a skipped wall time by its gap. */
 static void local_hour(sqlite3_context *ctx, int argc, sqlite3_value **values) {
@@ -133,6 +174,18 @@ static void local_hour(sqlite3_context *ctx, int argc, sqlite3_value **values) {
     struct tm local;
     if (!localtime_r(&seconds, &local)) { sqlite3_result_error(ctx, "Invalid timestamp", -1); return; }
     local.tm_min = local.tm_sec = 0;
+    struct hour_cache *cache = sqlite3_user_data(ctx);
+    const char *timezone = getenv("TZ");
+    size_t length = timezone ? strnlen(timezone, sizeof cache->timezone) : 0;
+    int cacheable = cache && length < sizeof cache->timezone;
+    if (cacheable && cache->valid && cache->has_tz == (timezone != NULL) &&
+        (!timezone || strcmp(cache->timezone, timezone) == 0) &&
+        cache->local.tm_year == local.tm_year && cache->local.tm_mon == local.tm_mon &&
+        cache->local.tm_mday == local.tm_mday && cache->local.tm_hour == local.tm_hour &&
+        cache->local.tm_isdst == local.tm_isdst) {
+        sqlite3_result_int64(ctx, cache->millis);
+        return;
+    }
     time_t selected = 0;
     struct tm selected_local = {0};
     int found = 0;
@@ -153,7 +206,23 @@ static void local_hour(sqlite3_context *ctx, int argc, sqlite3_value **values) {
         }
     }
     if (!found) { sqlite3_result_error(ctx, "Invalid local hour", -1); return; }
-    sqlite3_result_int64(ctx, (sqlite3_int64)selected * 1000);
+    sqlite3_int64 answer = (sqlite3_int64)selected * 1000;
+    if (cacheable) {
+        cache->valid = 1;
+        cache->has_tz = timezone != NULL;
+        cache->local = local;
+        if (timezone) memcpy(cache->timezone, timezone, length + 1);
+        cache->millis = answer;
+    } else if (cache) cache->valid = 0;
+    sqlite3_result_int64(ctx, answer);
+}
+
+static int register_local_hour(sqlite3 *connection) {
+    struct hour_cache *cache = calloc(1, sizeof *cache);
+    /* Allocation failure safely falls back to the uncached implementation.
+     * SQLite owns the allocation even when registration fails. */
+    return sqlite3_create_function_v2(connection, "local_hour", 1, SQLITE_UTF8,
+                                     cache, local_hour, NULL, NULL, free);
 }
 
 static void release_lock(void) {
@@ -222,7 +291,7 @@ int bf_open(const char *file) {
     sigaction(SIGINT, &action, NULL);
     sigaction(SIGTERM, &action, NULL);
     sigaction(SIGHUP, &action, NULL);
-    rc = sqlite3_create_function_v2(db, "local_hour", 1, SQLITE_UTF8, NULL, local_hour, NULL, NULL, NULL);
+    rc = register_local_hour(db);
     if (result(rc)) return 1;
     return bf_sql("PRAGMA foreign_keys=ON; PRAGMA synchronous=FULL;");
 }

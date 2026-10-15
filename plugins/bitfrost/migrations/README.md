@@ -126,6 +126,16 @@ rollups for older schemas. Original v7 databases receive corrections without los
 rollups whose source events expired. Deleted history from older releases cannot
 be recovered.
 
+The recount keeps one pending request and one pending turn, coalescing adjacent
+reports before writing their totals. It flushes on key changes and at end of stream;
+nonadjacent requests reload their stored totals. Hourly correction deltas retain
+individual event timestamps. Counted SQLite text slices avoid scanning padded
+identifier buffers in the hot loop; only each slice's returned length is valid.
+Numeric transport uses contiguous native signed 64-bit groups, reducing calls
+across the COBOL/C boundary without moving billing arithmetic out of COBOL.
+The local-hour helper caches one civil hour per connection, checks `TZ` on each
+lookup, and retains the original DST calculation on misses.
+
 `release/generate-migrations.mjs` only generates the build registry and combined
 COBOL source. Runtime migration selection and processing are COBOL.
 `daemon/migrate.ts` stops the daemon, coordinates the installation lock, and
