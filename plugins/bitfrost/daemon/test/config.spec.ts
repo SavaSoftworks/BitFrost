@@ -150,6 +150,14 @@ test('a model through another app is offered, but its own app keeps the name and
   assert.strictEqual(new Set(all).size, all.length, 'no alias names two models')
 })
 
+test('Claude models through other apps get no short names, so sonnet and opus keep meaning Claude Code models', () => {
+  const m = (harness: string, provider: string, model: string, displayName: string) => ({ harness, harnessName: harness, provider, model, displayName, description: '', efforts: [], defaultEffort: null, isDefault: false })
+  const agents = buildAgents([m('agy', 'Anthropic', 'claude-sonnet-4-6', 'Claude Sonnet 4.6 (Thinking)'), m('agy', 'Google', 'gemini-3.8-flash', 'Gemini 3.8 Flash')], new Map([['agy', 'Google']]))
+  assert.deepStrictEqual([agents[0].name, agents[0].aliases], ['claude-sonnet-4-6', []])
+  assert.ok(agents[1].aliases.length > 0)
+  assert.match(describe(agents[0], agents), /^Claude Sonnet 4\.6 \(Thinking\), Anthropic's model claude-sonnet-4-6, running in the real agy app/)
+})
+
 test('retention defaults, overrides and invalid shapes are checked', (t) => {
   const file = path.join(tempDir(t),'config.json')
   assert.deepEqual(loadConfig(file).retention,{ eventsDays:30,messagesDays:180 })

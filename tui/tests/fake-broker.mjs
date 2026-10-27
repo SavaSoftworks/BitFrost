@@ -139,15 +139,17 @@ function watchSubagents(params)
 }
 const today = new Date();
 today.setUTCHours(0, 0, 0, 0);
-const providers = [ 'codex', 'zcode', 'opencode', 'omp', 'gemini', 'crush' ].map(
+const providers = [ 'agy', 'codex', 'grok', 'zcode', 'crush', 'gemini', 'omp', 'opencode' ].map(
     (id, index) => ({
         id,
-        displayName : [ 'Codex', 'ZCode', 'OpenCode', 'OhMyPi', 'Gemini', 'Crush' ][index],
-        detected : index !== 1,
-        location : index === 1 ? null : '/usr/bin/' + id,
-        enabled : index !== 5,
-        optIn : index === 5,
-        running : index !== 1 && index !== 5,
+        displayName : [ 'Antigravity', 'Codex', 'Grok Build', 'ZCode', 'Crush', 'Gemini CLI',
+                        'Oh My Pi', 'OpenCode' ][index],
+        firstClass : index < 4,
+        detected : id !== 'zcode',
+        location : id === 'zcode' ? null : '/usr/bin/' + id,
+        enabled : ![ 'crush', 'grok', 'agy' ].includes(id),
+        optIn : [ 'crush', 'grok', 'agy' ].includes(id),
+        running : ![ 'zcode', 'crush', 'grok', 'agy' ].includes(id),
         mode : [ 'opencode', 'omp', 'crush' ].includes(id) ? 'allow' : 'deny',
     }));
 const modelIds = [
@@ -179,18 +181,18 @@ modelMap.get('opencode')
             ...modelMap.get('opencode')[0],
             model : 'opencode/claude-haiku-5-5',
             displayName : 'Claude Haiku',
-            enabled : true,
+            enabled : false,
             offered : false,
-            reason : 'anthropic',
+            reason : 'not_listed',
             agent : null
         },
         {
             ...modelMap.get('opencode')[0],
             model : 'opencode/claude-test',
             displayName : 'Claude Test',
-            enabled : true,
+            enabled : false,
             offered : false,
-            reason : 'anthropic',
+            reason : 'not_listed',
             agent : null
         },
     );
@@ -211,7 +213,7 @@ const sections = await settingsOf({
     handback : {enabled : true, model : 'sonnet', effort : 'low'},
     providers : {opencode : {enabled : true}},
 }, {codex : '/usr/local/bin/codex', zcode : '/opt/ZCode', opencode : null,
-    omp : '/usr/local/bin/pi', gemini : '/usr/local/bin/gemini', crush : null},
+    omp : '/usr/local/bin/pi', gemini : '/usr/local/bin/gemini', crush : null, grok : null, agy : null},
     newSettings ? '0.9.2' : '0.9.1');
 function totals(sessions, turns, tokens)
 {

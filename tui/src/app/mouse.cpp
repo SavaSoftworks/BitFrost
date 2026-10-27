@@ -82,7 +82,7 @@ namespace bf {
             int delta = 3 * event.delta;
             switch (target->kind) {
             case HitKind::Provider:
-                provider_view.scroll(delta, int(providers.size()), sidebar_visible);
+                provider_view.scroll(delta, sidebar_visible);
                 break;
             case HitKind::Section:
                 section_view.scroll(delta, int(sections.size()), sidebar_visible);

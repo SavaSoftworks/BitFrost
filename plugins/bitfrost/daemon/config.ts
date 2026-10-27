@@ -125,7 +125,7 @@ export function validateConfig(cfg: unknown, known: string[] = PROVIDERS.map((p)
         continue
       }
       if ('enabled' in entry && typeof entry.enabled !== 'boolean') errors.push(`providers.${id}.enabled must be true or false`)
-      for (const key of ['models', 'disabled']) if (key in entry && !isStrings(entry[key])) errors.push(`providers.${id}.${key} must be a list of strings`)
+      for (const key of ['models', 'disabled', 'anthropic']) if (key in entry && !isStrings(entry[key])) errors.push(`providers.${id}.${key} must be a list of strings`)
       for (const key of ['bin', 'dir']) if (key in entry && typeof entry[key] !== 'string') errors.push(`providers.${id}.${key} must be a string`)
     }
   }

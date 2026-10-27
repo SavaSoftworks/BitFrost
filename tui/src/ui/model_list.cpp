@@ -5,7 +5,6 @@
 // Public License, version 3 only. It comes with no warranty. See LICENSE.
 
 #include "model_list.hpp"
-#include "rpc/protocol.hpp"
 #include "ui/list.hpp"
 #include <algorithm>
 #include <iterator>
@@ -84,7 +83,7 @@ namespace bf {
         std::vector<int> enabled, everything;
         for (size_t index = 0; index < models.size(); ++index) {
             everything.push_back(int(index));
-            if (models[index]["enabled"].boolean() && model_toggle_allowed(models[index])) {
+            if (models[index]["enabled"].boolean()) {
                 enabled.push_back(int(index));
             }
         }

@@ -17,11 +17,13 @@ namespace bf {
         constexpr std::pair<std::string_view, std::string_view> names[]{
             {"codex", "Codex"},
             {"zcode", "ZCode"},
-            {"opencode", "opencode"},
+            {"opencode", "OpenCode"},
             {"oh-my-pi", "Oh My Pi"},
             {"omp", "Oh My Pi"},
             {"gemini", "Gemini CLI"},
-            {"crush", "Crush"}
+            {"crush", "Crush"},
+            {"grok", "Grok Build"},
+            {"agy", "Antigravity"}
         };
         for (auto [key, name] : names) {
             if (id == key) {

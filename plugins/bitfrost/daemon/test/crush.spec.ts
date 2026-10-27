@@ -192,7 +192,7 @@ test('a turn streams text, asks before a command and an edit, reports usage and 
     const [status, touch] = all(session, 'command_completed')
     assert.deepStrictEqual(
       { command: status.command, output: status.output, exitCode: status.exitCode, durationMs: status.durationMs, status: status.status, cwd: status.cwd },
-      { command: 'git status', output: 'nothing to commit', exitCode: 0, durationMs: 40, status: 'completed', cwd: run.cwd },
+      { command: 'ls', output: 'a.txt', exitCode: 0, durationMs: 40, status: 'completed', cwd: run.cwd },
     )
     assert.deepStrictEqual([touch.command, touch.summary, touch.status, touch.durationMs], ['touch a.txt', 'Create a.txt', 'completed', 250])
     assert.deepStrictEqual(find(session, 'file_change').changes, [{ path: file, kind: 'update', movePath: null, diff: '@@ -1,1 +1,1 @@\n-one\n+two' }])
@@ -439,13 +439,16 @@ test('a real Crush run replays: text, usage, a blocked command and a denied perm
 })
 
 test('only commands that cannot change anything skip asking', () => {
-  for (const c of ['ls', 'ls -la src', 'pwd', 'git status', 'git diff HEAD~1', 'git log --oneline -5', 'git diff src/a..b', 'git log main..HEAD', 'git show HEAD:src/x.ts', 'which node', 'echo hello', 'date']) assert.ok(readOnlyCommand(c), c)
+  for (const c of ['ls', 'ls -la src', 'pwd', 'which node', 'echo hello', 'date']) assert.ok(readOnlyCommand(c), c)
   for (const c of [
     'echo hi > file',
     'timeout 5 rm -rf build',
     'env rm -rf x',
     'nice make',
     'kill 1',
+    'git status',
+    'git diff HEAD~1',
+    'git log --oneline -5',
     'git branch -D main',
     'git diff --output=x',
     'git diff --no-index /etc/passwd /dev/null',

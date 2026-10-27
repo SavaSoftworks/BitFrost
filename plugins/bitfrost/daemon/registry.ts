@@ -17,20 +17,28 @@ export type AgentDef = HarnessModel & {
 
 const vendorKey = (v: string) => v.toLowerCase().replace(/[^a-z0-9]/g, '')
 
-export type Offer = null | 'anthropic' | 'disabled' | 'not_listed'
+export type Offer = null | 'disabled' | 'not_listed'
 
-// Exclude Anthropic only. Apps serving many companies need a model list to keep host context small.
+export const isAnthropic = (m: { provider: string }) => vendorKey(m.provider).startsWith('anthropic')
+
+// A Claude model in a models list needs a pattern that names it; a bare wildcard is not enough.
+export const turnsOn = (pattern: string, m: { provider: string; model: string }) =>
+  globMatch(pattern, m.model) && (!isAnthropic(m) || pattern === m.model || /claude|anthropic/i.test(pattern))
+
+// Apps serving many companies need a model list to keep host context small. Anthropic models
+// stay off until named too: in models for those apps, in anthropic for an app's own list.
 // Returns why a model isn't offered, or null when it is.
-export function whyNot(m: HarnessModel, ownVendors: Map<string, string>, allow: Map<string, string[]>, deny: Map<string, string[]> = new Map()): Offer {
-  if (vendorKey(m.provider).startsWith('anthropic')) return 'anthropic'
-  if (deny.get(m.harness)?.some((pattern) => globMatch(pattern, m.model))) return 'disabled'
+export function whyNot(m: HarnessModel, ownVendors: Map<string, string>, allow: Map<string, string[]>, deny: Map<string, string[]> = new Map(), anthropic: Map<string, string[]> = new Map()): Offer {
+  const named = (list: string[] | undefined) => !!list?.some((pattern) => globMatch(pattern, m.model))
+  if (named(deny.get(m.harness))) return 'disabled'
   const list = allow.get(m.harness)
-  if (!list) return ownVendors.has(m.harness) ? null : 'not_listed'
-  return list.some((pattern) => globMatch(pattern, m.model)) ? null : 'not_listed'
+  if (list) return list.some((pattern) => turnsOn(pattern, m)) ? null : 'not_listed'
+  if (!ownVendors.has(m.harness)) return 'not_listed'
+  return !isAnthropic(m) || named(anthropic.get(m.harness)) ? null : 'not_listed'
 }
 
-export function selectModels(found: HarnessModel[], ownVendors: Map<string, string>, allow: Map<string, string[]>, deny?: Map<string, string[]>): HarnessModel[] {
-  return found.filter((m) => whyNot(m, ownVendors, allow, deny) === null)
+export function selectModels(found: HarnessModel[], ownVendors: Map<string, string>, allow: Map<string, string[]>, deny?: Map<string, string[]>, anthropic?: Map<string, string[]>): HarnessModel[] {
+  return found.filter((m) => whyNot(m, ownVendors, allow, deny, anthropic) === null)
 }
 
 export function globMatch(pattern: string, value: string): boolean {
@@ -63,6 +71,7 @@ function newer(a: string | null, b: string | null): boolean {
 
 // Build versioned aliases; bare names select the newest model in each family. A model run by its
 // company's own app claims its name and aliases before the same model through another app.
+// Claude models get no aliases, since names like sonnet already mean Claude Code's own models.
 export function buildAgents(models: HarnessModel[], ownVendors: Map<string, string> = new Map()): AgentDef[] {
   const facts = new Map(models.map((m) => [m, familyOf(m.displayName)]))
   const own = (m: HarnessModel) => {
@@ -76,6 +85,7 @@ export function buildAgents(models: HarnessModel[], ownVendors: Map<string, stri
   }
   const newest = new Map<string, HarnessModel>()
   for (const m of ranked) {
+    if (isAnthropic(m)) continue
     for (const bare of bareNames(m)) {
       const cur = newest.get(bare)
       if (!cur || newer(facts.get(m)!.version, facts.get(cur)!.version)) newest.set(bare, m)
@@ -88,7 +98,7 @@ export function buildAgents(models: HarnessModel[], ownVendors: Map<string, stri
     const { family, vendor, version } = facts.get(m)!
     const aliases = new Set<string>()
     const claim = (alias: string) => { if (!claimed.has(alias)) { claimed.add(alias); aliases.add(alias) } }
-    if (version) {
+    if (version && !isAnthropic(m)) {
       claim(`${family.replace(/\s+/g, '')}${version}`)
       claim(`${family} ${version}`)
       if (vendor) claim(`${vendor}${version} ${family}`)

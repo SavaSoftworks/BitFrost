@@ -7,7 +7,6 @@
 #include "app/app.hpp"
 #include "fx/glyphs.hpp"
 #include "fx/mosaic.hpp"
-#include "rpc/protocol.hpp"
 #include "term/output.hpp"
 #include "ui/format.hpp"
 #include "ui/list.hpp"
@@ -54,6 +53,138 @@ namespace bf {
             check(rejected, "JSON accepts malformed input");
         }
 
+        void providers_selftest() {
+            Json::Array providers = Json::parse(R"([
+                {"id":"opencode", "displayName":"OpenCode", "firstClass":false},
+                {"id":"zcode", "displayName":"ZCode", "firstClass":true},
+                {"id":"grok", "displayName":"Grok Build", "firstClass":true},
+                {"id":"omp", "displayName":"Oh My Pi", "firstClass":false},
+                {"id":"crush", "displayName":"crush", "firstClass":false},
+                {"id":"codex", "displayName":"Codex", "firstClass":true},
+                {"id":"gemini", "displayName":"Gemini CLI", "firstClass":false},
+                {"id":"agy", "displayName":"antigravity", "firstClass":true}
+            ])")
+                                        .array();
+            std::deque<Json> pending;
+            std::vector<Json> sent;
+            App app(
+                [&](const Json &request) {
+                    pending.push_back(request);
+                    sent.push_back(request);
+                },
+                false
+            );
+            Grid grid(120, 20);
+            auto pump = [&] {
+                while (!pending.empty()) {
+                    Json request = pending.front();
+                    pending.pop_front();
+                    Json result = Json::object({{"protocol", 1}, {"revision", "test"}});
+                    if (request["method"].str() == "providers.list") {
+                        result["providers"] = providers;
+                    }
+                    app.receive(Json::object({{"id", request["id"]}, {"result", result}}));
+                }
+                app.render(grid);
+            };
+            auto key = [&](Key key) {
+                app.input({key, {}});
+                pump();
+            };
+            auto line = [&](int y, bool selected = false) {
+                std::string text;
+                for (int x = 4; x < 23; ++x) {
+                    const Cell &cell = grid.cells[size_t(y * grid.width + x)];
+                    text += !selected || cell.fg == black ? cell.glyph : " ";
+                }
+                return text;
+            };
+            auto selected = [&](std::string_view name) {
+                for (int y = 5; y < status_row(grid); ++y) {
+                    if (line(y, true).starts_with(name)) {
+                        return true;
+                    }
+                }
+                return false;
+            };
+            app.start();
+            pump();
+            key(Key::Enter);
+            std::vector<std::string> expected{
+                "antigravity",
+                "Codex",
+                "Grok Build",
+                "ZCode",
+                "",
+                "crush",
+                "Gemini CLI",
+                "Oh My Pi",
+                "OpenCode"
+            };
+            for (size_t row = 0; row < expected.size(); ++row) {
+                check(line(5 + int(row)).starts_with(expected[row]), "Provider groups sort names without case");
+            }
+            check(line(9) == std::string(19, ' '), "Provider groups have one empty row");
+            key(Key::Down);
+            key(Key::Down);
+            key(Key::Down);
+            check(selected("ZCode"), "Sidebar reaches the last first-class provider");
+            auto requests = sent.size();
+            check(!app.mouse_input({{5, 9}, MouseKind::Click, 0}), "Provider gap has no click target");
+            pump();
+            check(selected("ZCode") && sent.size() == requests, "Gap click leaves selection and requests alone");
+            key(Key::Down);
+            check(selected("crush"), "Sidebar Down skips the gap");
+            key(Key::Up);
+            check(selected("ZCode"), "Sidebar Up skips the gap");
+            key(Key::End);
+            check(selected("OpenCode"), "Sidebar End selects the last provider");
+            key(Key::Down);
+            check(selected("antigravity"), "Sidebar wraps from the end to the top");
+            key(Key::Up);
+            check(selected("OpenCode"), "Sidebar wraps from the top to the end");
+            key(Key::PageUp);
+            check(selected("antigravity"), "Sidebar Page Up skips the gap");
+            key(Key::PageDown);
+            check(selected("OpenCode"), "Sidebar Page Down skips the gap");
+            check(app.mouse_input({{5, 10}, MouseKind::Click, 0}), "Second provider group accepts clicks");
+            pump();
+            check(selected("crush"), "Mouse rows map past the gap to provider indices");
+            key(Key::Home);
+            key(Key::Down);
+            providers[5]["displayName"] = "zzCodex";
+            std::reverse(providers.begin(), providers.end());
+            app.receive(Json::object({{"method", "config.changed"}}));
+            pump();
+            check(selected("zzCodex"), "Provider refresh preserves the selected id after sorting changes its index");
+            grid = Grid(120, 16);
+            key(Key::Home);
+            check(app.mouse_input({{5, 7}, MouseKind::Wheel, 100}), "Provider sidebar scrolls");
+            pump();
+            check(line(5).starts_with("zzCodex"), "Provider wheel scrolls without moving selection");
+            key(Key::Down);
+            check(selected("zzCodex"), "Navigation after scrolling selects the visible provider");
+            GroupedList view;
+            view.reset({"first", "first", "first", "first", "other", "other", "other", "other"}, false);
+            view.scroll(4, 5);
+            int item = 0;
+            view.input(item, Key::Down, 5);
+            check(item == 4 && view.first_row(item, 5) == 4, "Navigation skips a gap at the scrolled viewport top");
+            grid = Grid(120, 20);
+            for (bool first : {true, false}) {
+                for (Json &entry : providers) {
+                    entry["firstClass"] = first;
+                }
+                app.receive(Json::object({{"method", "config.changed"}}));
+                pump();
+                key(Key::Home);
+                for (int y = 5; y < 13; ++y) {
+                    check(line(y) != std::string(19, ' '), "A single provider group has no gap or headings");
+                }
+                check(line(13) == std::string(19, ' '), "A single provider group has exactly eight rows");
+            }
+        }
+
         void json_numbers_selftest() {
             struct CommaNumbers : std::numpunct<char> {
                 char do_decimal_point() const override {
@@ -98,6 +229,7 @@ namespace bf {
 
     int selftest() {
         try {
+            providers_selftest();
             status_selftest();
             protocol_selftest();
             settings_selftest();
@@ -262,7 +394,7 @@ namespace bf {
             Json::Array model_fixture = Json::parse(R"([
             {"model":"a", "enabled":true, "offered":false, "reason":"disabled"},
             {"model":"b", "enabled":false, "offered":false, "reason":"disabled"},
-            {"model":"c", "enabled":true, "offered":false, "reason":"anthropic"}
+            {"model":"c", "enabled":false, "offered":false, "reason":"not_listed"}
         ])")
                                             .array();
             ModelList combined;
@@ -270,7 +402,7 @@ namespace bf {
             check(
                 combined.rows().size() == 7 && combined.selected_row() == 1 && combined.model_index() == 0 &&
                     combined.rows()[2].model < 0 && combined.rows()[2].title.empty(),
-                "Enabled section excludes blocked models and selects past its header"
+                "Enabled section excludes off models and selects past its header"
             );
             combined.input(Key::Up, 3);
             check(combined.selected_row() == 6 && combined.model_index() == 2, "Combined model wheel wraps up");
@@ -546,6 +678,7 @@ namespace bf {
         {
           "id": "codex",
           "displayName": "Codex",
+          "firstClass": true,
           "detected": true,
           "enabled": true,
           "mode": "deny"
@@ -553,6 +686,7 @@ namespace bf {
         {
           "id": "crush",
           "displayName": "Crush",
+          "firstClass": false,
           "detected": true,
           "enabled": false,
           "mode": "allow"
@@ -580,16 +714,16 @@ namespace bf {
         {
           "model": "test/claude",
           "displayName": "Claude",
-          "enabled": true,
+          "enabled": false,
           "offered": false,
-          "reason": "anthropic"
+          "reason": "not_listed"
         },
         {
           "model": "test/claude-other",
           "displayName": "Claude other",
-          "enabled": true,
+          "enabled": false,
           "offered": false,
-          "reason": "anthropic"
+          "reason": "not_listed"
         }
       ]
     })"
@@ -1086,17 +1220,21 @@ namespace bf {
             faults.render(grid);
             pump();
             check(
-                faults.focused() == Focus::Popup && !model_toggle_allowed(Json::object({{"reason", "anthropic"}})),
-                "Anthropic model has no toggle action"
+                faults.focused() == Focus::Popup && frame_text(grid).find("> Enable") != std::string::npos,
+                "Anthropic model exposes an enable action"
             );
             fault_key(Key::Enter);
             check(
-                std::none_of(
+                std::any_of(
                     queue.begin(),
                     queue.end(),
-                    [](const Json &request) { return request["method"].str() == "models.set"; }
+                    [](const Json &request) {
+                        return request["method"].str() == "models.set" &&
+                               request["params"]["model"].str() == "test/claude" &&
+                               request["params"]["enabled"].boolean();
+                    }
                 ),
-                "Blocked model Enter sends no write"
+                "Anthropic model Enter sends an enable write"
             );
             Diff optimized;
             Grid styles(10, 4);

@@ -85,8 +85,8 @@ namespace bf {
         void draw_configuration(Grid &);
         ModelList model_rows;
         int section_selection = 0, item_selection = 0, popup_selection = 0;
-        GroupedList setting_rows, helper_rows;
-        ListView provider_view, section_view, status_view, popup_view;
+        GroupedList provider_view, setting_rows, helper_rows;
+        ListView section_view, status_view, popup_view;
         int stats_tab = 0, sidebar_visible = 1, list_visible = 1, popup_visible = 1;
         static constexpr int STATS_TABS = 4;
         bool loading_models = false, loading_settings = false, saving = false, running = true;

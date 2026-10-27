@@ -10,7 +10,7 @@
 #include <iterator>
 
 namespace bf {
-    void GroupedList::reset(const std::vector<std::string> &groups) {
+    void GroupedList::reset(const std::vector<std::string> &groups, bool headings) {
         entries.clear();
         selectable.clear();
         std::vector<std::string> names;
@@ -23,7 +23,7 @@ namespace bf {
             if (!entries.empty()) {
                 entries.push_back({-1, {}});
             }
-            if (!name.empty()) {
+            if (headings && !name.empty()) {
                 entries.push_back({-1, name});
             }
             for (int index = 0; index < int(groups.size()); ++index) {

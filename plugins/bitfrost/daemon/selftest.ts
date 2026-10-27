@@ -159,7 +159,8 @@ async function runOne(factory: ProviderFactory, config: Config, agentName?: stri
     if (Array.isArray(listed)) allow.set(provider.id, listed)
     // Treat an explicit model choice as the required model list for a multi-company app.
     else if (agentName && !provider.vendor) allow.set(provider.id, [agentName])
-    const agents = buildAgents(selectModels(models, ownVendors, allow), ownVendors)
+    const anthropic = new Map([[provider.id, [...(config.providers[provider.id]?.anthropic ?? []), ...(agentName ? [agentName] : [])].map(String)]])
+    const agents = buildAgents(selectModels(models, ownVendors, allow, undefined, anthropic), ownVendors)
     const agent = pickAgent(agents, agentName)
     if (!agent) {
       if (agentName) {

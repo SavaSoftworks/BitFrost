@@ -9,7 +9,10 @@ import { execFileSync } from 'node:child_process'
 
 // owner is the helper that started the group: its store, and its own pid and start time.
 type Owner = { store: string; pid: number; startTime: string | null }
-export type ProcessIdentity = { pgid: number; startTime: string | null; token: string; owner?: Owner }
+// marker names the environment variable that carries token; older records are ZCode's.
+export type ProcessIdentity = { pgid: number; startTime: string | null; token: string; marker?: string; owner?: Owner }
+
+const APPS: Record<string, string> = { BITFROST_ZCODE_TURN: 'ZCode', BITFROST_AGY_PROC: 'Antigravity' }
 
 let self: Owner | null = null
 
@@ -32,8 +35,8 @@ export function ownProcesses(store: string) {
   self = { store: real, pid: process.pid, startTime: startTimeOf(process.pid) }
 }
 
-export function processIdentity(pgid: number, token: string): ProcessIdentity {
-  return { pgid, startTime: startTimeOf(pgid), token, ...(self ? { owner: self } : {}) }
+export function processIdentity(pgid: number, token: string, marker = 'BITFROST_ZCODE_TURN'): ProcessIdentity {
+  return { pgid, startTime: startTimeOf(pgid), token, ...(marker !== 'BITFROST_ZCODE_TURN' ? { marker } : {}), ...(self ? { owner: self } : {}) }
 }
 
 // A group is this helper's to stop when it started it, or a helper on the same store that is gone did.
@@ -47,7 +50,9 @@ function mine(owner: Owner | undefined) {
 }
 
 export function killOwnedGroup(identity: ProcessIdentity, log: (text: string) => void = () => {}): boolean {
-  if (!Number.isSafeInteger(identity?.pgid) || identity.pgid <= 1 || !identity.token || !mine(identity.owner)) return false
+  const marker = identity?.marker ?? 'BITFROST_ZCODE_TURN'
+  if (!Number.isSafeInteger(identity?.pgid) || identity.pgid <= 1 || !identity.token || !APPS[marker] || !mine(identity.owner)) return false
+  const tag = `${marker}=${identity.token}`
   let ours = false
   try {
     if (process.platform === 'linux') {
@@ -57,7 +62,7 @@ export function killOwnedGroup(identity: ProcessIdentity, log: (text: string) =>
           const pid = Number(name), info = stat(pid)
           if (info.pgid !== identity.pgid || (pid === identity.pgid && identity.startTime && info.startTime !== identity.startTime)) continue
           const env = fs.readFileSync(`/proc/${pid}/environ`, 'utf8').split('\0')
-          if (env.includes(`BITFROST_ZCODE_TURN=${identity.token}`)) { ours = true; break }
+          if (env.includes(tag)) { ours = true; break }
         } catch {}
       }
     } else if (process.platform === 'darwin') {
@@ -65,11 +70,11 @@ export function killOwnedGroup(identity: ProcessIdentity, log: (text: string) =>
       ours = rows.split('\n').some((row) => {
         const match = row.match(/^\s*(\d+)\s+(\d+)\s+(.+)$/)
         if (!match || Number(match[2]) !== identity.pgid) return false
-        if (Number(match[1]) === identity.pgid && identity.startTime && processIdentity(identity.pgid, identity.token).startTime !== identity.startTime) return false
-        return match[3].split(/\s+/).includes(`BITFROST_ZCODE_TURN=${identity.token}`)
+        if (Number(match[1]) === identity.pgid && identity.startTime && startTimeOf(identity.pgid) !== identity.startTime) return false
+        return match[3].split(/\s+/).includes(tag)
       })
     }
-    if (ours) { process.kill(-identity.pgid, 'SIGKILL'); log(`stopped leftover ZCode process group ${identity.pgid}`); return true }
+    if (ours) { process.kill(-identity.pgid, 'SIGKILL'); log(`stopped leftover ${APPS[marker]} process group ${identity.pgid}`); return true }
   } catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ESRCH') log(`could not stop process group ${identity.pgid}: ${(e as Error).message}`) }
   return false
 }

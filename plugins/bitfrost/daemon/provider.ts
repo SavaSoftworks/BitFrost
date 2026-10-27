@@ -98,6 +98,8 @@ export type ProviderFactory = {
   vendor?: string
   // Enable only when config.json explicitly turns this provider on.
   optIn?: boolean
+  // A dedicated harness, listed before apps that wrap many companies' models.
+  firstClass?: boolean
   create(env: ProviderEnv): Provider | null
   // Where the app is, without starting it; null when it isn't installed.
   detect?(env: ProviderEnv): string | null

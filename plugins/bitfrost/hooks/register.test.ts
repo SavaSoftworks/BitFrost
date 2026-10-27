@@ -208,7 +208,8 @@ const world = (on: any, opts: { store?: Record<string, unknown> } = {}) => {
     w.modelCalls.push(e)
     return { value: fake.reviewReply }
   })
-  on('tool.check', () => ({ value: { decision: 'ask' } }))
+  // A query from BitFrost's review gets no verdict; real calls run, as no dialog exists here.
+  on('tool.check', ($: any, e: any) => ({ decision: e.tool_use_id ? 'allow' : 'ask' }))
   on('tool.register', ($: any, e: any) => {
     w.tools.push(e)
     return { value: { tool: `mcp__bitfrost__${e.name}` } }
@@ -381,6 +382,14 @@ test('with no models to offer, the helper\'s hint reaches the user', { timeoutMs
   expect(said).toHaveLength(1)
   expect(said[0].text).toContain(hint)
   expect(w.registered).toEqual([])
+})
+
+test('a Claude model from another app registers under a label that is never a real Claude model id', { timeoutMs: 20000 }, async ($, on) => {
+  const w = world(on)
+  const sonnet = { ...SOL, name: 'claude-sonnet-4-6', model: 'claude-sonnet-4-6', displayName: 'Claude Sonnet 4.6', provider: 'Anthropic', aliases: [], family: 'sonnet', harness: 'agy' }
+  w.fake.agentsReply = { agents: [SOL, sonnet], nameTable: NAME_TABLE, at: 1 }
+  await start($)
+  expect(w.registered.map((r: any) => r.model)).toEqual(['gpt-6-sol[1m]', 'agy-claude-sonnet-4-6[1m]'])
 })
 
 // Delivers the handback in a step's chunks, then runs the closing step after it.

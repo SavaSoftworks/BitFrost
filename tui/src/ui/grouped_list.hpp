@@ -21,7 +21,7 @@ namespace bf {
         bool following = true;
 
       public:
-        void reset(const std::vector<std::string> &groups);
+        void reset(const std::vector<std::string> &groups, bool headings = true);
         void input(int &item, Key key, int visible_rows);
         void scroll(int delta, int visible_rows);
         void clear_view() {

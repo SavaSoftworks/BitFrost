@@ -1,0 +1,25 @@
+{
+  "_note": "Recorded from Grok Build 1.0.52, grok-4.5 low. Native question response verified live as outcome accepted with answers keyed by question text.",
+  "method": "_x.ai/ask_user_question",
+  "params": {
+    "sessionId": "$SESSION",
+    "toolCallId": "call-282b1e44-7700-4e73-a20b-fc7d679bb61b-0",
+    "questions": [
+      {
+        "question": "Which color do you choose?",
+        "options": [
+          {
+            "label": "Blue",
+            "description": "Choose Blue"
+          },
+          {
+            "label": "Red",
+            "description": "Choose Red"
+          }
+        ],
+        "multiSelect": null
+      }
+    ],
+    "mode": "default"
+  }
+}

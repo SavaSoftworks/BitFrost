@@ -176,7 +176,8 @@ namespace bf {
                         providers.push_back(
                             Json::object(
                                 {{"id", "provider-" + std::to_string(index)},
-                                 {"displayName", "Provider " + std::to_string(index)},
+                                 {"displayName",
+                                  "Provider " + std::string(index < 10 ? "0" : "") + std::to_string(index)},
                                  {"enabled", true},
                                  {"detected", true}}
                             )
@@ -302,7 +303,7 @@ namespace bf {
         auto model_requests = count("models.list");
         wheel(5, 1);
         require(
-            line(grid, 4, 5, 15).starts_with("Provider 3") && count("models.list") == model_requests &&
+            line(grid, 4, 5, 15).starts_with("Provider 03") && count("models.list") == model_requests &&
                 app.focused() == Focus::Sidebar,
             "Sidebar wheel moves three rows without changing provider selection or loading models"
         );
@@ -318,7 +319,7 @@ namespace bf {
         );
         wheel(5, -1000);
         wheel(5, -1);
-        require(line(grid, 4, 5, 15).starts_with("Provider 0"), "Sidebar clamps at the top");
+        require(line(grid, 4, 5, 15).starts_with("Provider 00"), "Sidebar clamps at the top");
         key(Key::Up);
         require(
             last("models.list")["params"]["provider"].str() == "provider-0",

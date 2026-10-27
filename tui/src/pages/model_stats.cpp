@@ -5,7 +5,6 @@
 // Public License, version 3 only. It comes with no warranty. See LICENSE.
 
 #include "app/app.hpp"
-#include "rpc/protocol.hpp"
 #include "ui/format.hpp"
 #include "ui/list.hpp"
 #include "ui/usage_chart.hpp"
@@ -79,10 +78,7 @@ namespace bf {
             grid.text(x, y + 2, "Select a model", dim, black, facts_width - 2);
             return;
         }
-        std::string state = std::string(model_unavailable_reason(model()));
-        if (state.empty()) {
-            state = model()["enabled"].boolean() ? "Enabled" : "Disabled";
-        }
+        std::string state = model()["enabled"].boolean() ? "Enabled" : "Disabled";
         std::string efforts;
         for (const Json &effort : model()["efforts"].array()) {
             efforts += (efforts.empty() ? "" : ", ") + effort.str();

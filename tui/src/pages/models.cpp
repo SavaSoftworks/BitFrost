@@ -5,7 +5,6 @@
 // Public License, version 3 only. It comes with no warranty. See LICENSE.
 
 #include "app/app.hpp"
-#include "rpc/protocol.hpp"
 #include "ui/list.hpp"
 #include "ui/popup.hpp"
 #include "ui/sidebar.hpp"
@@ -23,7 +22,8 @@ namespace bf {
         stats_visible = panel_height > 0;
         load_stats();
         list_visible = std::max(1, panel_y - 6);
-        int first_provider = provider_view.first_row(provider_selection, int(providers.size()), sidebar_visible);
+        int first_provider = provider_view.first_row(provider_selection, sidebar_visible);
+        const auto &provider_rows = provider_view.rows();
         int sidebar_width = draw_scrollbar(
             grid,
             "providers",
@@ -31,21 +31,25 @@ namespace bf {
             layout.sidebar_y,
             layout.sidebar_width - 3,
             sidebar_visible,
-            int(providers.size()),
+            int(provider_rows.size()),
             first_provider,
             sidebar_visible
         );
         hits.scroll({3, layout.sidebar_y, layout.sidebar_width - 3, sidebar_visible}, HitKind::Provider);
-        for (int index = first_provider; index < int(providers.size()) && index < first_provider + sidebar_visible;
+        for (int index = first_provider; index < int(provider_rows.size()) && index < first_provider + sidebar_visible;
              ++index) {
-            hits.add({3, layout.sidebar_y + index - first_provider, sidebar_width, 1}, HitKind::Provider, index);
-            const Json &entry = providers[size_t(index)];
+            int item = provider_rows[size_t(index)].item;
+            if (item < 0) {
+                continue;
+            }
+            hits.add({3, layout.sidebar_y + index - first_provider, sidebar_width, 1}, HitKind::Provider, item);
+            const Json &entry = providers[size_t(item)];
             list_item(
                 grid,
                 3,
                 layout.sidebar_y + index - first_provider,
                 sidebar_width,
-                {entry["displayName"].str(), index == provider_selection, !entry["detected"].boolean()},
+                {entry["displayName"].str(), item == provider_selection, !entry["detected"].boolean()},
                 clock
             );
         }
@@ -89,7 +93,6 @@ namespace bf {
                 const Json &entry = models[size_t(row.model)];
                 hits.add({layout.main_x, 5 + index - first_model, width, 1}, HitKind::Model, index);
                 std::string label = row.label.empty() ? entry["model"].str() : row.label;
-                std::string_view reason = model_unavailable_reason(entry);
                 bool offered = entry["enabled"].boolean() && entry["offered"].boolean() && entry["reason"].null();
                 list_item(
                     grid,
@@ -99,7 +102,7 @@ namespace bf {
                     {label,
                      index == model_rows.selected_row() && focus.back() != Focus::Sidebar,
                      !offered,
-                     reason,
+                     {},
                      offered ? "on" : "off"},
                     clock
                 );
@@ -131,20 +134,15 @@ namespace bf {
         Popup popup{x, y, width, height};
         hits.modal({x, y, width, height});
         popup_frame(grid, popup, model()["displayName"].str(model()["model"].str()));
-        bool can_toggle = model_toggle_allowed(model());
-        if (can_toggle) {
-            list_item(
-                grid,
-                x + 1,
-                y + 3,
-                width - 2,
-                {model()["enabled"].boolean() ? "> Disable" : "> Enable", true},
-                clock
-            );
-            hits.add({x + 1, y + 3, width - 2, 1}, HitKind::ModelAction);
-        } else {
-            grid.text(x + 2, y + 3, model_unavailable_reason(model()), dim, black, width - 4);
-        }
+        list_item(
+            grid,
+            x + 1,
+            y + 3,
+            width - 2,
+            {model()["enabled"].boolean() ? "> Disable" : "> Enable", true},
+            clock
+        );
+        hits.add({x + 1, y + 3, width - 2, 1}, HitKind::ModelAction);
         std::string hint = controls_hint();
         popup_footer(grid, popup, hint);
         hits.add({x + 2, y + height - 2, text_width(hint), 1}, HitKind::Controls);

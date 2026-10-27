@@ -6,7 +6,6 @@
 
 #include "app.hpp"
 #include "fx/border.hpp"
-#include "rpc/protocol.hpp"
 #include "ui/sidebar.hpp"
 #include <algorithm>
 

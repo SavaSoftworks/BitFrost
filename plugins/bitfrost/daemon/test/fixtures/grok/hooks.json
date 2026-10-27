@@ -1,0 +1,83 @@
+{
+  "_note": "Recorded through the process plugin in Grok Build 1.0.52, grok-4.5 low. The command was denied by the bridge; the subsequent native question was answered Blue.",
+  "events": [
+    {
+      "hookEventName": "pre_tool_use",
+      "sessionId": "$SESSION",
+      "cwd": "$CWD",
+      "workspaceRoot": "$CWD",
+      "timestamp": "2026-10-15T18:09:34.900382963+00:00",
+      "transcriptPath": "$CWD/updates.jsonl",
+      "permissionMode": "bypassPermissions",
+      "toolName": "run_terminal_command",
+      "toolUseId": "call-505b27b2-db56-4faa-98cd-c2376f76c3b1-0",
+      "toolInput": {
+        "command": "printf bitfrost-hook",
+        "description": "Print bitfrost-hook exactly once"
+      },
+      "toolInputTruncated": false,
+      "hook_event_name": "PreToolUse",
+      "session_id": "$SESSION",
+      "transcript_path": "$CWD/updates.jsonl",
+      "permission_mode": "bypassPermissions",
+      "tool_name": "run_terminal_command",
+      "tool_input": {
+        "command": "printf bitfrost-hook",
+        "description": "Print bitfrost-hook exactly once"
+      },
+      "tool_use_id": "call-505b27b2-db56-4faa-98cd-c2376f76c3b1-0"
+    },
+    {
+      "hookEventName": "pre_tool_use",
+      "sessionId": "$SESSION",
+      "cwd": "$CWD",
+      "workspaceRoot": "$CWD",
+      "timestamp": "2026-10-15T18:09:37.114670580+00:00",
+      "transcriptPath": "$CWD/updates.jsonl",
+      "permissionMode": "bypassPermissions",
+      "toolName": "ask_user_question",
+      "toolUseId": "call-91a2d068-ef11-430a-8cd0-4b50cf48732a-1",
+      "toolInput": {
+        "questions": [
+          {
+            "question": "Blue or Red?",
+            "options": [
+              {
+                "label": "Blue",
+                "description": "Choose Blue"
+              },
+              {
+                "label": "Red",
+                "description": "Choose Red"
+              }
+            ]
+          }
+        ]
+      },
+      "toolInputTruncated": false,
+      "hook_event_name": "PreToolUse",
+      "session_id": "$SESSION",
+      "transcript_path": "$CWD/updates.jsonl",
+      "permission_mode": "bypassPermissions",
+      "tool_name": "ask_user_question",
+      "tool_input": {
+        "questions": [
+          {
+            "question": "Blue or Red?",
+            "options": [
+              {
+                "label": "Blue",
+                "description": "Choose Blue"
+              },
+              {
+                "label": "Red",
+                "description": "Choose Red"
+              }
+            ]
+          }
+        ]
+      },
+      "tool_use_id": "call-91a2d068-ef11-430a-8cd0-4b50cf48732a-1"
+    }
+  ]
+}

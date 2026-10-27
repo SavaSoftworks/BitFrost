@@ -177,6 +177,7 @@ export async function serveRpc(opts: { input?: Readable; output?: Writable; file
   const notify = (method: string, params: unknown) => send({ method, params })
   let known = revision(file)
   const lastModels = new Map<string, string[]>()
+  const claudeModels = new Map<string, Set<string>>()
   const polling = new Set<string>()
   let renew: NodeJS.Timeout | null = null
   let starting: Promise<void> | null = null
@@ -304,6 +305,7 @@ export async function serveRpc(opts: { input?: Readable; output?: Writable; file
       const id = factory(p?.provider).id
       const r = await ask(`/providers/${encodeURIComponent(id)}/models${p?.refresh ? '?refresh=1' : ''}`, 20_000)
       lastModels.set(id, r.models.map((m: any) => m.model))
+      claudeModels.set(id, new Set(r.models.filter((m: any) => /^anthropic/i.test(m.company ?? '')).map((m: any) => m.model)))
       if (r.pending) poll(id)
       return r
     },
@@ -365,11 +367,15 @@ export async function serveRpc(opts: { input?: Readable; output?: Writable; file
       const f = factory(p?.provider)
       if (typeof p.model !== 'string' || !p.model || typeof p.enabled !== 'boolean') throw new RpcError('bad_request', 'models.set needs model and enabled')
       // A pattern may be turned into the models it covers, so use the app's list as it is now.
-      if (!f.vendor && !p.enabled) {
+      if ((!f.vendor && !p.enabled) || (f.vendor && (!claudeModels.has(f.id) || !lastModels.get(f.id)?.includes(p.model)))) {
         const now = await ask(`/providers/${encodeURIComponent(f.id)}/models`).catch(() => null)
-        if (now?.models?.length) lastModels.set(f.id, now.models.map((m: any) => m.model))
+        if (now?.models?.length) {
+          lastModels.set(f.id, now.models.map((m: any) => m.model))
+          claudeModels.set(f.id, new Set(now.models.filter((m: any) => /^anthropic/i.test(m.company ?? '')).map((m: any) => m.model)))
+        }
       }
-      return change(p.revision, (raw) => setModel(raw, f.id, p.model, p.enabled, f.vendor ? 'deny' : 'allow', lastModels.get(f.id) ?? []))
+      const claude = !!claudeModels.get(f.id)?.has(p.model)
+      return change(p.revision, (raw) => setModel(raw, f.id, p.model, p.enabled, f.vendor ? 'deny' : 'allow', lastModels.get(f.id) ?? [], claude))
     },
     'providers.set': (p) => {
       const f = factory(p?.provider)

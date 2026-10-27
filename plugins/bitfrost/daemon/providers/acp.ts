@@ -54,7 +54,7 @@ export type AcpOptions = {
 // Cache for a day because listing can switch models and leave history entries.
 const MODELS_TTL_MS = 24 * 60 * 60_000
 
-type Turn = {
+export type AcpTurn = {
   id: string
   cancelled: boolean
   wrongModel: string | null
@@ -66,7 +66,7 @@ type Turn = {
   denied: { at: number; reason: string } | null
 }
 
-type State = {
+export type AcpState = {
   session: Session
   acpId: string
   cwd: string
@@ -76,9 +76,12 @@ type State = {
   intro: string | null
   drifted: boolean
   dead: boolean
-  turn: Turn | null
+  turn: AcpTurn | null
   grants: Set<string>
 }
+
+type Turn = AcpTurn
+type State = AcpState
 
 type Pending =
   | { kind: 'permission'; session: Session; rpcId: number | string; options: Json[]; grantKey: string }
@@ -93,18 +96,19 @@ export class AcpProvider implements Provider {
   readonly location: string
   private spec: AcpAgentSpec
   private launch: AcpLaunch
-  private log: (msg: string) => void
+  protected log: (msg: string) => void
   private record: ((line: string) => void) | null
   private cacheFile: string | null
   private allow: string[] | null
   private models: { at: number; allow: string[] | null; list: HarnessModel[] } | null = null
-  private proc: ChildProcess | null = null
+  protected proc: ChildProcess | null = null
   private ready: Promise<void> | null = null
   private agentCaps: Json = {}
+  protected initialized: Json = null
   private nextId = 1
   private requests = new Map<number, { session?: Session; resolve: (v: Json) => void; reject: (e: Error) => void }>()
-  private byAcpId = new Map<string, State>()
-  private states = new Map<string, State>()
+  protected byAcpId = new Map<string, State>()
+  protected states = new Map<string, State>()
   private pending = new Map<string, Pending>()
   private opening = new Set<Session>()
   private discovering = 0
@@ -129,7 +133,7 @@ export class AcpProvider implements Provider {
   }
 
 
-  private start(): Promise<void> {
+  protected start(): Promise<void> {
     if (this.ready) return this.ready
     const proc = spawn(this.launch.bin, this.launch.args, { stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, ...this.launch.env } })
     this.proc = proc
@@ -147,6 +151,7 @@ export class AcpProvider implements Provider {
     }).then((r) => {
       if (r?.protocolVersion !== PROTOCOL_VERSION) throw new Error(`${this.displayName} speaks ACP version ${r?.protocolVersion}, not ${PROTOCOL_VERSION}`)
       this.agentCaps = r.agentCapabilities ?? {}
+      this.initialized = r
     })
     this.ready.catch((e) => {
       this.log(`${this.id}: handshake failed: ${e.message}`)
@@ -155,7 +160,7 @@ export class AcpProvider implements Provider {
     return this.ready
   }
 
-  private onExit(proc: ChildProcess, why: string) {
+  protected onExit(proc: ChildProcess, why: string) {
     if (this.proc !== proc) return
     this.proc = null
     this.ready = null
@@ -184,7 +189,7 @@ export class AcpProvider implements Provider {
     this.proc?.stdin!.write(JSON.stringify({ jsonrpc: '2.0', ...msg }) + '\n')
   }
 
-  private request(method: string, params: Json, session?: Session): Promise<Json> {
+  protected request(method: string, params: Json, session?: Session): Promise<Json> {
     if (!this.proc) return Promise.reject(new Error(`${this.displayName} is not running`))
     const id = this.nextId++
     return new Promise((resolve, reject) => {
@@ -193,7 +198,7 @@ export class AcpProvider implements Provider {
     })
   }
 
-  private reply(rpcId: number | string, result: Json) {
+  protected reply(rpcId: number | string, result: Json) {
     this.send({ id: rpcId, result })
   }
 
@@ -209,34 +214,38 @@ export class AcpProvider implements Provider {
       const r = this.requests.get(msg.id)
       if (!r) return
       this.requests.delete(msg.id)
-      if (msg.error) r.reject(Object.assign(new Error(msg.error.message ?? 'error'), { code: msg.error.code }))
+      if (msg.error) r.reject(Object.assign(new Error(msg.error.message ?? 'error'), { code: msg.error.code, data: msg.error.data }))
       else r.resolve(msg.result)
     } else if (msg.id !== undefined) {
       this.onRequest(msg)
     } else if (msg.method === 'session/update') {
       this.onUpdate(msg.params ?? {})
-    }
+    } else this.onNotification(msg.method, msg.params ?? {})
   }
 
-  private onRequest(msg: Json) {
+  protected onNotification(method: string, params: Json) {}
+
+  protected onRequest(msg: Json) {
     if (msg.method === 'session/request_permission') return this.onPermission(msg.id, msg.params ?? {})
     if (msg.method === 'elicitation/create') return this.onElicitation(msg.id, msg.params ?? {})
     this.log(`${this.id} asked ${msg.method}; not offered, refusing`)
     this.send({ id: msg.id, error: { code: -32601, message: `bitfrost does not handle ${msg.method}` } })
   }
 
-  private explain(e: Json): Error {
+  protected explain(e: Json): Error {
     if (e?.code !== AUTH_REQUIRED) return e
     return new Error(`${this.displayName} could not start a session: ${e.message}. If it needs signing in, run \`${this.spec.loginCommand}\` in a terminal, then try again.`)
   }
 
   private async newSession(cwd: string, session?: Session): Promise<Json> {
     try {
-      return await this.request('session/new', { cwd, mcpServers: [] }, session)
+      return await this.request('session/new', this.sessionParams(cwd), session)
     } catch (e) {
       throw this.explain(e)
     }
   }
+
+  protected sessionParams(cwd: string): Json { return { cwd, mcpServers: [] } }
 
   // Close task sessions to keep their history; delete throwaway sessions when supported.
   private dropSession(acpId: string, keep = false) {
@@ -406,7 +415,7 @@ export class AcpProvider implements Provider {
     await this.start()
     if (!this.agentCaps.loadSession) throw new Error(`${this.displayName} can't reopen this session: the agent does not advertise loadSession`)
     if (!ref?.acpSessionId) throw new Error(`${this.displayName} can't reopen this session: no native session id was saved`)
-    const r = await this.request('session/load', { sessionId: ref.acpSessionId, cwd: session.info.cwd, mcpServers: [] }, session)
+    const r = await this.request('session/load', { sessionId: ref.acpSessionId, ...this.sessionParams(session.info.cwd) }, session)
     const modelOption = await this.chooseModel(ref.acpSessionId, r, session.info.model, session.info.effort ?? undefined, session)
     const st: State = { session, acpId: ref.acpSessionId, cwd: session.info.cwd, model: session.info.model, modelOption, canAsk: !!ref.canAsk, intro: null, drifted: false, dead: false, turn: null, grants: new Set() }
     this.states.set(session.info.id, st)
@@ -450,7 +459,7 @@ export class AcpProvider implements Provider {
     }
   }
 
-  private stateOf(session: Session): State | undefined {
+  protected stateOf(session: Session): State | undefined {
     return this.states.get(session.info.id)
   }
 
@@ -476,7 +485,7 @@ export class AcpProvider implements Provider {
   }
 
   // ACP requires cancelling pending requests before stopping the turn.
-  private cancelTurn(st: State) {
+  protected cancelTurn(st: State) {
     const turn = st.turn
     if (!turn || turn.cancelled) return
     turn.cancelled = true
@@ -488,7 +497,7 @@ export class AcpProvider implements Provider {
     timer.unref()
   }
 
-  private dropPending(session: Session) {
+  protected dropPending(session: Session) {
     for (const [id, p] of this.pending) {
       if (p.session !== session) continue
       this.pending.delete(id)
@@ -497,13 +506,10 @@ export class AcpProvider implements Provider {
     }
   }
 
-  private endTurn(st: State, turn: Turn, r: Json, error: string | null) {
+  protected endTurn(st: State, turn: Turn, r: Json, error: string | null) {
     if (st.turn !== turn) return
     this.flush(st, turn)
-    // Keep context limits on the last snapshot, and bill the prompt-wide totals once.
-    const out = r.usage?.outputTokens
-    if (turn.lastUsed !== null) st.session.push({ type: 'usage', requestId: turn.id, inputTokens: turn.lastUsed, outputTokens: Number(out) || 0, cachedInputTokens: 0,
-      billing: { inputTokens: r.usage?.inputTokens ?? turn.lastUsed, outputTokens: Number(out) || 0, cachedInputTokens: Number(r.usage?.cachedInputTokens) || 0, requests: Number(r.usage?.modelRequestCount) || 1 } })
+    this.endUsage(st, turn, r)
     const stop = r.stopReason
     const status =
       turn.wrongModel || (error && !turn.cancelled) ? 'failed'
@@ -511,7 +517,7 @@ export class AcpProvider implements Provider {
       : stop === 'end_turn' ? 'completed'
       : 'failed'
     const denied = stop !== 'end_turn' && !turn.cancelled && !turn.wrongModel && turn.denied && Date.now() - turn.denied.at <= 2000 ? turn.denied : null
-    const reason: EndReason = turn.wrongModel ? 'wrong_model' : turn.cancelled || stop === 'cancelled' ? 'interrupted' : denied ? 'permission_denied' : error ? 'error' : ({ end_turn: 'end_turn', max_tokens: 'max_tokens', max_turn_requests: 'max_requests', refusal: 'refusal' } as Record<string, EndReason>)[stop] ?? 'error'
+    const reason: EndReason = turn.wrongModel ? 'wrong_model' : turn.cancelled || stop === 'cancelled' ? 'interrupted' : denied ? 'permission_denied' : this.endReason(stop, error)
     const why = turn.wrongModel
       ? `${this.displayName} switched to ${turn.wrongModel} instead of ${st.model}; stopped it`
       : (denied?.reason ?? error ?? (status === 'failed' ? (STOPS[stop] ?? `it stopped (${stop})`) : null))
@@ -519,8 +525,19 @@ export class AcpProvider implements Provider {
     st.session.push({ type: 'turn_completed', turnId: turn.id, status, reason, finalText: turn.finalText, ...(why ? { error: why } : {}) })
   }
 
+  protected endUsage(st: State, turn: Turn, r: Json) {
+    // Keep context limits on the last snapshot, and bill the prompt-wide totals once.
+    const out = r.usage?.outputTokens
+    if (turn.lastUsed !== null) st.session.push({ type: 'usage', requestId: turn.id, inputTokens: turn.lastUsed, outputTokens: Number(out) || 0, cachedInputTokens: 0,
+      billing: { inputTokens: r.usage?.inputTokens ?? turn.lastUsed, outputTokens: Number(out) || 0, cachedInputTokens: Number(r.usage?.cachedInputTokens) || 0, requests: Number(r.usage?.modelRequestCount) || 1 } })
+  }
 
-  private onUpdate(p: Json) {
+  protected endReason(stop: string, error: string | null): EndReason {
+    return error ? 'error' : ({ end_turn: 'end_turn', max_tokens: 'max_tokens', max_turn_requests: 'max_requests', refusal: 'refusal' } as Record<string, EndReason>)[stop] ?? 'error'
+  }
+
+
+  protected onUpdate(p: Json) {
     const st = this.byAcpId.get(p.sessionId)
     const u = p.update ?? {}
     if (!st) return
@@ -547,7 +564,7 @@ export class AcpProvider implements Provider {
   }
 
   // Stop model switches so the task uses only the model the user chose.
-  private checkModel(st: State, options: Json[] | undefined) {
+  protected checkModel(st: State, options: Json[] | undefined) {
     const now = options?.find(isSelect('model'))?.currentValue
     if (now === undefined || now === st.model) return
     st.drifted = true
