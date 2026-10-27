@@ -208,7 +208,8 @@ const world = (on: any, opts: { store?: Record<string, unknown> } = {}) => {
     w.modelCalls.push(e)
     return { value: fake.reviewReply }
   })
-  on('tool.check', () => ({ value: { decision: 'ask' } }))
+  // A query from BitFrost's review gets no verdict; real calls run, as no dialog exists here.
+  on('tool.check', ($: any, e: any) => ({ decision: e.tool_use_id ? 'allow' : 'ask' }))
   on('tool.register', ($: any, e: any) => {
     w.tools.push(e)
     return { value: { tool: `mcp__bitfrost__${e.name}` } }
