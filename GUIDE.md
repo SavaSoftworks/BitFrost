@@ -33,7 +33,7 @@ through a `zcode` executable on PATH. A custom `providers.zcode.dir` or
 
 Then run `bitfrost setup zcode` once. Without it, GLM can't ask you for permission and is refused instead.
 
-### opencode, Oh My Pi, Gemini CLI, Crush
+### OpenCode, Oh My Pi, Gemini CLI, Crush
 
 Sign in to the app first (`opencode auth login`, `omp`, `gemini`, or `crush login` and Crush's own provider setup). Then open the config screen (`bitfrost config`), turn the app on and pick its models. Or do the same by hand in `~/.config/bitfrost/config.json`:
 
@@ -48,9 +48,37 @@ Sign in to the app first (`opencode auth login`, `omp`, `gemini`, or `crush logi
 }
 ```
 
-opencode, Oh My Pi and Crush need `models`: only the models listed there are offered. `*` works as a wildcard. Gemini CLI offers all its models unless you name ones to skip.
+OpenCode, Oh My Pi and Crush need `models`: only the models listed there are offered. `*` works as a wildcard. Gemini CLI offers all its models unless you name ones to skip.
 
-Anthropic models are never offered through these apps. Any other model they list can be, GPT, GLM and Gemini included. If Codex, ZCode or Gemini CLI also offers that model, theirs keeps the short name, like glm, and the copy is named after its model id, like opencode-go-glm-5-3.
+Any model they list can be offered, Claude, GPT, GLM and Gemini included. A Claude model needs a pattern that names it, like anthropic/* or its full id. A bare * doesn't turn Claude models on. Claude models get no short names, so names like sonnet keep meaning Claude Code's own models. If Codex, ZCode or Gemini CLI also offers that model, theirs keeps the short name, like glm, and the copy is named after its model id, like opencode-go-glm-5-3.
+
+### Grok Build
+
+Sign in to the Grok CLI (`grok login`). Then open the config screen (`bitfrost config`) and turn Grok Build on. Or do the same by hand in `~/.config/bitfrost/config.json`:
+
+```json
+{ "providers": { "grok": { "enabled": true } } }
+```
+
+It offers all its Grok models without a `models` list. No setup step. BitFrost runs it in always-approve mode and gates every action itself, so reads and edits inside the task folder run without asking; other commands and actions ask you. Its own subagents and scheduled runs are refused.
+
+### Antigravity
+
+Sign Antigravity in with an API key or a business account (an enterprise, Workspace or Google Cloud account). A personal Google account, or any sign-in BitFrost doesn't recognize as an API key or business account, won't work with BitFrost, because Antigravity's terms don't allow using it through another tool while it is signed in to a personal account. Then open the config screen (`bitfrost config`) and turn Antigravity on. Or do the same by hand in `~/.config/bitfrost/config.json`:
+
+```json
+{ "providers": { "agy": { "enabled": true } } }
+```
+
+Turning it on installs a small BitFrost bridge plugin into `~/.gemini/config/plugins/bitfrost-bridge`, so there is no setup step. If BitFrost ever says the bridge is missing, run `bitfrost setup agy`. The plugin does nothing in your own `agy` sessions and is removed by `bitfrost uninstall`. Reads and edits inside the task folder run without asking; commands and other actions ask you. Its subagents, agent messaging, workflows and schedules are refused.
+
+It offers Gemini models, for example Gemini 3.8 Flash with effort low, medium and high, and gpt-oss. Antigravity's separate per-effort model ids show as one model with efforts, and its Claude models stay off until you turn them on in the config screen, or name them in `"anthropic": [...]` under `providers.agy`. Without a current bridge, BitFrost keeps Antigravity's permission prompts on, so actions that need permission are refused.
+
+### Why did my Antigravity models disappear?
+
+BitFrost checks how each Antigravity run signed in, before the first prompt and again before each model request. If that run used a personal Google account, a sign-in BitFrost doesn't recognize, or BitFrost can't tell how it signed in, BitFrost stops it and the task fails with a message saying why. The model listing does the same check, so with a personal sign-in the Antigravity models drop out of Claude's list of subagents and the Models page shows the reason. There is no setting to override this.
+
+Switch Antigravity to an API key or a business account and it works again from the next run. The models come back within about 10 minutes, or right away after a refresh on the BitFrost Models page. Note that an API key set only in a shell rc file may not reach the BitFrost helper if it was started from the desktop app; the key must be in the environment the helper runs in.
 
 ### Custom Claude profiles
 
@@ -90,7 +118,7 @@ On the Models page, pick an app, then pick a model. Apps serving their own compa
 { "providers": { "codex": { "disabled": ["gpt-5-mini"] } } }
 ```
 
-Apps serving many companies' models, like opencode, Oh My Pi and Crush, only offer the models you list, so turning one on adds it:
+Apps serving many companies' models, like OpenCode, Oh My Pi and Crush, only offer the models you list, so turning one on adds it:
 
 ```json
 { "providers": { "opencode": { "models": ["deepseek/*"] } } }
@@ -124,7 +152,7 @@ curl -fsSL https://github.com/SavaSoftworks/BitFrost/releases/download/v0.8.1/in
 
 Run `bitfrost uninstall`. It lists what it will remove and asks whether to remove BitFrost, your configuration, and your subagent history and usage stats. Keeping history preserves it for a reinstall.
 
-`--yes` removes everything without prompting; add `--keep-config` or `--keep-history` to preserve either. If a subagent is running, uninstall changes nothing and asks you to wait.
+`--yes` removes everything without prompting; add `--keep-config` or `--keep-history` to preserve either. It also removes the Antigravity bridge plugin, if installed. If a subagent is running, uninstall changes nothing and asks you to wait.
 
 ## Troubleshooting
 
@@ -167,7 +195,7 @@ BitFrost reloads configuration and detects app updates automatically. Changes th
 
 ### How do I turn an app off?
 
-On the config screen, pick the app on the Settings page and turn it off. Or set `"enabled": false` under its name in `providers` in `~/.config/bitfrost/config.json`.
+On the config screen, pick the app on the Settings page and turn it off. Or set `"enabled": false` under its name in `providers` in `~/.config/bitfrost/config.json`. Grok Build and Antigravity start off, so turn them on this way first.
 
 ## Using it
 
@@ -181,11 +209,11 @@ Yes. Ask "what is glm doing?". Claude checks BitFrost for the current step, rece
 
 ### Can I message a subagent while it works?
 
-Yes, through Claude. Codex models take the message inside their current turn. GLM and opencode models get it when their turn ends. If it can't wait, ask Claude to interrupt: the subagent stops its current step and carries on in the same conversation with your message. Claude is told which of these happened.
+Yes, through Claude. Codex models take the message inside their current turn. Antigravity steers the running turn, like Codex. Grok Build has no steering, so a message waits for its next turn. GLM and OpenCode models get it when their turn ends. If it can't wait, ask Claude to interrupt: the subagent stops its current step and carries on in the same conversation with your message. Claude is told which of these happened.
 
 ### Can I resume a subagent after restarting Claude?
 
-Yes. Reopen the conversation and ask Claude to continue it. It picks up in the same conversation inside its app. For opencode this only works if your opencode version can reopen sessions.
+Yes. Reopen the conversation and ask Claude to continue it. It picks up in the same conversation inside its app. For OpenCode this only works if your OpenCode version can reopen sessions.
 
 ### Where does BitFrost keep subagent history?
 
@@ -205,7 +233,7 @@ From the subagent runs BitFrost has recorded. The Models page shows usage for To
 
 ### Who answers a subagent's permission requests?
 
-In normal mode, you decide; no answer means Deny. In auto mode, a safety review decides instead.
+In normal mode, you decide; no answer means Deny. In auto mode, a safety review decides instead. Grok Build and Antigravity run in approve mode, so BitFrost gates their actions itself: reads and edits inside the task folder don't ask, other commands and actions ask you, and their own subagents and schedules are refused.
 
 ### What is official handback?
 

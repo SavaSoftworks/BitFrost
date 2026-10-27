@@ -18,12 +18,23 @@ import { useTestSettings } from './fixtures/settings.ts'
 
 const model = (harness: string, provider: string, id: string) => ({ harness, provider, model: id, displayName: id, description: '', efforts: [], defaultEffort: null, isDefault: false })
 
-test('whyNot: Anthropic, deny lists, then allow lists', () => {
-  const own = new Map([['codex', 'OpenAI']])
-  const allow = new Map([['opencode', ['opencode-go/*']]])
+test('whyNot: deny lists, allow lists, and Claude models only once named', () => {
+  const own = new Map([['codex', 'OpenAI'], ['agy', 'Google']])
+  const allow = new Map([['opencode', ['opencode-go/*', 'anthropic/claude-opus-5']]])
   const deny = new Map([['codex', ['gpt-old*']]])
-  assert.equal(whyNot(model('opencode', 'Anthropic', 'claude'), own, allow, deny), 'anthropic')
-  // Only Anthropic is held back; another company's model runs through any app that lists it.
+  const anthropic = new Map([['agy', ['claude-sonnet-4-6']]])
+  // A Claude model runs through an app that lists it, like any other company's model.
+  assert.equal(whyNot(model('opencode', 'Anthropic', 'anthropic/claude-opus-5'), own, allow, deny), null)
+  assert.equal(whyNot(model('opencode', 'Anthropic', 'anthropic/claude-haiku-5'), own, allow, deny), 'not_listed')
+  // A wildcard alone never turns a Claude model on; a pattern naming Claude does.
+  assert.equal(whyNot(model('crush', 'Anthropic', 'anthropic/claude-haiku-5'), own, new Map([['crush', ['*']]]), deny), 'not_listed')
+  assert.equal(whyNot(model('crush', 'OpenAI', 'openai/gpt-x'), own, new Map([['crush', ['*']]]), deny), null)
+  assert.equal(whyNot(model('crush', 'Anthropic', 'anthropic/claude-haiku-5'), own, new Map([['crush', ['anthropic/*']]]), deny), null)
+  // An app's own list offers everything but Claude models, which wait for the anthropic list.
+  assert.equal(whyNot(model('agy', 'Google', 'gemini-3.8-flash'), own, allow, deny, anthropic), null)
+  assert.equal(whyNot(model('agy', 'Anthropic', 'claude-sonnet-4-6'), own, allow, deny, anthropic), null)
+  assert.equal(whyNot(model('agy', 'Anthropic', 'claude-opus-4-6-thinking'), own, allow, deny, anthropic), 'not_listed')
+  assert.equal(whyNot(model('agy', 'Anthropic', 'claude-sonnet-4-6'), own, allow, new Map([['agy', ['claude-*']]]), anthropic), 'disabled')
   assert.equal(whyNot(model('opencode', 'OpenAI', 'opencode-go/gpt-x'), own, allow, deny), null)
   assert.equal(whyNot(model('opencode', 'OpenAI', 'gpt-x'), own, allow, deny), 'not_listed')
   assert.equal(whyNot(model('codex', 'OpenAI', 'gpt-old-1'), own, allow, deny), 'disabled')
@@ -31,6 +42,24 @@ test('whyNot: Anthropic, deny lists, then allow lists', () => {
   assert.equal(whyNot(model('opencode', 'Moonshot', 'opencode-go/kimi'), own, allow, deny), null)
   assert.equal(whyNot(model('opencode', 'Moonshot', 'other/kimi'), own, allow, deny), 'not_listed')
   assert.equal(whyNot(model('omp', 'Moonshot', 'kimi'), own, allow, deny), 'not_listed')
+})
+
+test('setModel: a Claude model in an own-company app goes in and out of the anthropic list', () => {
+  const raw: any = { providers: { agy: { disabled: ['claude-sonnet-4-6', 'gemini-old'] } } }
+  setModel(raw, 'agy', 'claude-sonnet-4-6', true, 'deny', [], true)
+  assert.deepEqual(raw.providers.agy, { disabled: ['gemini-old'], anthropic: ['claude-sonnet-4-6'] })
+  setModel(raw, 'agy', 'claude-sonnet-4-6', false, 'deny', [], true)
+  assert.deepEqual(raw.providers.agy, { disabled: ['gemini-old'] })
+  // An app with a models list keeps using it, Claude models included.
+  const listed: any = { providers: { agy: { models: ['gemini-*'] } } }
+  setModel(listed, 'agy', 'claude-sonnet-4-6', true, 'deny', [], true)
+  assert.deepEqual(listed.providers.agy, { models: ['gemini-*', 'claude-sonnet-4-6'] })
+  // A wildcard doesn't cover a Claude model, so turning one on names it and turning it off keeps the wildcard.
+  const wild: any = { providers: { crush: { models: ['*'] } } }
+  setModel(wild, 'crush', 'anthropic/claude-haiku-5', true, 'allow', [], true)
+  assert.deepEqual(wild.providers.crush, { models: ['*', 'anthropic/claude-haiku-5'] })
+  setModel(wild, 'crush', 'anthropic/claude-haiku-5', false, 'allow', [], true)
+  assert.deepEqual(wild.providers.crush, { models: ['*'] })
 })
 
 test('setModel: deny mode adds and removes exact ids in disabled', () => {

@@ -232,7 +232,9 @@ namespace bf {
                               Json::object({{"id", "opencode"}, {"location", "/opt/opencode"}, {"models", 9}}),
                               Json::object({{"id", "omp"}, {"location", "/opt/omp"}, {"models", 10}}),
                               Json::object({{"id", "gemini"}, {"location", "/opt/gemini"}, {"models", 11}}),
-                              Json::object({{"id", "crush"}, {"location", "/opt/crush"}, {"models", 12}})
+                              Json::object({{"id", "crush"}, {"location", "/opt/crush"}, {"models", 12}}),
+                              Json::object({{"id", "grok"}, {"location", "/opt/grok"}, {"models", 13}}),
+                              Json::object({{"id", "agy"}, {"location", "/opt/agy"}, {"models", 14}})
                           }},
                          {"leases",
                           Json::Array{
@@ -354,7 +356,8 @@ namespace bf {
                 text(grid, true).find("workstation") == std::string::npos,
             "Helper scrolls to leases without selectable highlights"
         );
-        for (std::string_view name : {"Codex", "ZCode", "opencode", "Oh My Pi", "Gemini CLI", "Crush"}) {
+        for (std::string_view name :
+             {"Codex", "ZCode", "OpenCode", "Oh My Pi", "Gemini CLI", "Crush", "Grok Build", "Antigravity"}) {
             require(helper_text.find(name) != std::string::npos, "Helper uses app display names as group headings");
         }
         require(

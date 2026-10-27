@@ -9,5 +9,8 @@ import { codexProvider } from './codex.ts'
 import { zcodeProvider } from './zcode.ts'
 import { geminiProvider, ompProvider, opencodeProvider } from './acp-agents.ts'
 import { crushProvider } from './crush.ts'
+import { grokProvider } from './grok.ts'
+import { agyProvider } from './agy.ts'
 
-export const PROVIDERS: ProviderFactory[] = [codexProvider, zcodeProvider, opencodeProvider, ompProvider, geminiProvider, crushProvider]
+// Dedicated harnesses first, then apps serving many companies, each group alphabetical.
+export const PROVIDERS: ProviderFactory[] = [agyProvider, codexProvider, grokProvider, zcodeProvider, crushProvider, geminiProvider, ompProvider, opencodeProvider]

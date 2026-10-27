@@ -9,7 +9,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { createHash } from 'node:crypto'
 import { validateConfig } from './config.ts'
-import { globMatch } from './registry.ts'
+import { globMatch, turnsOn } from './registry.ts'
 
 export type Raw = Record<string, any>
 
@@ -98,12 +98,28 @@ const entryOf = (raw: Raw, id: string) => {
 }
 const listOf = (v: unknown): string[] => (Array.isArray(v) ? v.map(String) : [])
 
-// deny: apps serving their own company offer every model unless providers.<id>.disabled names it.
+// deny: apps serving their own company offer every model unless providers.<id>.disabled names it,
+// except Claude models, which they offer once providers.<id>.anthropic names them.
 // allow: apps serving many companies offer only what providers.<id>.models names.
-export function setModel(raw: Raw, id: string, model: string, enabled: boolean, mode: 'deny' | 'allow', known: string[]): string[] {
+export function setModel(raw: Raw, id: string, model: string, enabled: boolean, mode: 'deny' | 'allow', known: string[], claude = false): string[] {
   const entry = entryOf(raw, id)
   const notes: string[] = []
   const hasList = Array.isArray(entry.models)
+  const covers = (p: string) => (claude ? turnsOn(p, { provider: 'Anthropic', model }) : globMatch(p, model))
+  if (claude && mode === 'deny' && !hasList) {
+    const rest = listOf(entry.anthropic).filter((p) => p !== model)
+    const still = !enabled && rest.find((p) => globMatch(p, model))
+    if (still) notes.push(`${model} is still turned on by "${still}" in providers.${id}.anthropic`)
+    const list = enabled ? [...rest, model] : rest
+    if (list.length) entry.anthropic = list
+    else delete entry.anthropic
+    if (enabled) {
+      const disabled = listOf(entry.disabled).filter((p) => p !== model)
+      if (disabled.length) entry.disabled = disabled
+      else delete entry.disabled
+    }
+    return notes
+  }
   if (enabled) {
     const disabled = listOf(entry.disabled).filter((p) => p !== model)
     const still = disabled.find((p) => globMatch(p, model))
@@ -112,7 +128,7 @@ export function setModel(raw: Raw, id: string, model: string, enabled: boolean, 
     else delete entry.disabled
     if (mode === 'allow' || hasList) {
       const models = listOf(entry.models)
-      if (!models.some((p) => globMatch(p, model))) models.push(model)
+      if (!models.some(covers)) models.push(model)
       entry.models = models
     }
   } else if (mode === 'deny' && !hasList) {
@@ -123,7 +139,7 @@ export function setModel(raw: Raw, id: string, model: string, enabled: boolean, 
     // A pattern that covers this model turns into the models it covers now, minus this one.
     const out: string[] = []
     for (const p of listOf(entry.models)) {
-      if (!globMatch(p, model)) out.push(p)
+      if (!covers(p)) out.push(p)
       else if (p !== model && p.includes('*')) out.push(...known.filter((k) => k !== model && globMatch(p, k)))
     }
     entry.models = [...new Set(out)]

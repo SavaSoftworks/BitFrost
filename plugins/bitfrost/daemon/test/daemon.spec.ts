@@ -424,7 +424,8 @@ test('/providers lists every app, with its mode and whether it runs', async () =
   const r = await call('GET', '/providers')
   assert.strictEqual(r.status, 200)
   const byId = Object.fromEntries(r.body.providers.map((p: any) => [p.id, p]))
-  assert.deepStrictEqual(r.body.providers.slice(0, 2).map((p: any) => p.id), ['codex', 'zcode'])
+  // Dedicated harnesses come first, then apps serving many companies, each alphabetical.
+  assert.deepStrictEqual(r.body.providers.map((p: any) => [p.id, p.firstClass]), [['agy', true], ['codex', true], ['grok', true], ['zcode', true], ['crush', false], ['gemini', false], ['omp', false], ['opencode', false]])
   assert.deepStrictEqual([byId.codex.running, byId.codex.enabled, byId.codex.detected, byId.codex.mode, byId.codex.location], [true, true, true, 'deny', FAKE])
   assert.deepStrictEqual([byId.zcode.running, byId.zcode.enabled, byId.zcode.mode], [false, false, 'deny'])
   assert.deepStrictEqual([byId.opencode.running, byId.opencode.enabled, byId.opencode.optIn, byId.opencode.mode], [false, false, true, 'allow'])

@@ -71,6 +71,24 @@ test('push writes sessions, native refs, turns, events, messages and usage throu
   } finally { reader.close() }
 })
 
+test('the startup sweep lists each owned session process once, then forgets closed ones', (t) => {
+  const { store, session } = setup(t)
+  const owner = { store: '/data/bitfrost.db', pid: 1234, startTime: '1' }
+  const open = session('open')
+  open.setNativeRef({ conversationId: 'c1', process: { pgid: 501, startTime: '9', token: 'a', marker: 'BITFROST_AGY_PROC', owner } })
+  // Records without an owner may come from a copied store, so they are skipped.
+  session('old').setNativeRef({ process: { pgid: 502, startTime: '9', token: 'b' } })
+  const closed = session('closed')
+  closed.info.closedAt = Date.now()
+  closed.setNativeRef({ conversationId: 'c3', process: { pgid: 503, startTime: '9', token: 'c', owner } })
+  const tokens = () => store.processes().map((r) => [r.pgid, JSON.parse(r.process_identity).token])
+  assert.deepStrictEqual(tokens().sort(), [[501, 'a'], [503, 'c']])
+  store.forgetProcesses()
+  assert.deepStrictEqual(tokens(), [[501, 'a']])
+  const saved = store.db.prepare("SELECT native_ref FROM sessions WHERE id='closed'").get() as any
+  assert.deepStrictEqual(JSON.parse(saved.native_ref), { conversationId: 'c3' })
+})
+
 test('details are capped with a truncation marker and completion-only tools are retained', (t) => {
   const { store, session } = setup(t)
   const s = session()

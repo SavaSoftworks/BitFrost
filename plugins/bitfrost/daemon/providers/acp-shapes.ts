@@ -4,6 +4,8 @@
 // BitFrost is free software: you can share and change it under the GNU General
 // Public License, version 3 only. It comes with no warranty. See LICENSE.
 
+import fs from 'node:fs'
+import path from 'node:path'
 import type { Decision, FileChange, Question } from '../events.ts'
 export { globMatch } from '../registry.ts'
 
@@ -28,6 +30,28 @@ export const blankTool = (): ToolCall => ({ kind: 'other', title: '', name: null
 export const objectOf = (v: Json): Json => (v && typeof v === 'object' && !Array.isArray(v) ? v : {})
 const str = (v: Json): string | undefined => (typeof v === 'string' && v ? v : undefined)
 export const isSelect = (category: string) => (o: Json) => o?.category === category && o.type === 'select'
+
+// Compare real paths so a link inside the folder cannot point an edit outside it.
+// A missing path resolves through its parent; a dangling link resolves to nothing.
+function realPath(p: string): string | null {
+  try { return fs.realpathSync(p) } catch (e) {
+    if (!['ENOENT', 'ENOTDIR'].includes((e as NodeJS.ErrnoException).code ?? '')) return null
+    try { if (fs.lstatSync(p).isSymbolicLink()) return null } catch {}
+    const parent = path.dirname(p)
+    if (parent === p) return null
+    const real = realPath(parent)
+    return real ? path.join(real, path.basename(p)) : null
+  }
+}
+
+// Whether file, relative to dir or absolute, is inside dir.
+export function inside(file: string, dir: string): boolean {
+  const f = realPath(path.resolve(dir, file))
+  const d = realPath(path.resolve(dir))
+  if (!f || !d) return false
+  const rel = path.relative(d, f)
+  return rel !== '..' && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel)
+}
 
 export function choicesOf(option: Json): Json[] {
   return (option.options ?? []).flatMap((o: Json) => (Array.isArray(o.options) ? o.options : [o]))
@@ -56,10 +80,11 @@ export function outputOf(t: ToolCall): string {
   const texts = t.content.filter((c) => c?.type === 'content' && c.content?.type === 'text').map((c) => String(c.content.text))
   // Oh My Pi repeats the command in its output; remove that block.
   const kept = t.kind === 'execute' ? texts.filter((x) => x !== `$ ${commandOf(t)}`) : texts
-  if (kept.length) return kept.join('\n')
+  if (kept.some((x) => x.length)) return kept.join('\n')
   const o = t.rawOutput
   if (o == null) return ''
   if (typeof o === 'string') return o
+  if (typeof o.output_for_prompt === 'string') return o.output_for_prompt
   if (typeof o.output === 'string') return o.output
   if (typeof o.stdout === 'string') return o.stdout + (o.stderr ? `\n${o.stderr}` : '')
   if (typeof o.error === 'string') return o.error

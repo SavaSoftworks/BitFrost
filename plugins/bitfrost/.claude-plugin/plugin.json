@@ -1,7 +1,7 @@
 {
   "name": "bitfrost",
-  "version": "0.9.2",
-  "description": "Use Codex, ZCode and ACP apps (opencode, Oh My Pi, Gemini CLI) as Claude Code subagents",
+  "version": "0.9.3",
+  "description": "Use Codex, ZCode, ACP apps (opencode, Oh My Pi, Gemini CLI), Crush, Grok Build and Antigravity as Claude Code subagents",
   "author": {
     "name": "Nick Germaine"
   },

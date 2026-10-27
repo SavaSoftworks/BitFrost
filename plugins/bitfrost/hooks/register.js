@@ -270,7 +270,8 @@ const CONTEXT_CAP = 150_000
 
 // Claude Code gives an unknown model a 200k window and blocks every step past it.
 // A Claude handback reports its real usage, which can pass 200k, so ask for 1M.
-const modelLabel = (def) => `${def.model}[1m]`
+// A Claude model through another app gets its app's name in front, so its label is never a real Claude model id.
+const modelLabel = (def) => `${/^anthropic/i.test(def.provider ?? '') ? `${def.harness}-` : ''}${def.model}[1m]`
 
 function capUsage(u) {
   const output = Math.min(u.output_tokens, CONTEXT_CAP / 4)

@@ -431,11 +431,19 @@ export class Store {
     })
   }
 
-  processes(): Row[] { return this.read(() => this.stmt('SELECT pgid,process_identity FROM turns WHERE pgid IS NOT NULL AND process_identity IS NOT NULL').all()) }
+  // Sessions also name a process that outlives its turns. Only owned ones count, as old ones may come from a copied store.
+  processes(): Row[] {
+    return this.read(() => this.stmt(`SELECT pgid,process_identity FROM turns WHERE pgid IS NOT NULL AND process_identity IS NOT NULL
+      UNION ALL SELECT json_extract(native_ref,'$.process.pgid'),json_extract(native_ref,'$.process') FROM sessions
+      WHERE json_extract(native_ref,'$.process.owner') IS NOT NULL`).all())
+  }
 
-  // Ended turns were swept once at startup, so later startups skip them.
+  // Ended turns and closed sessions were swept once at startup, so later startups skip them.
   forgetProcesses() {
-    try { this.stmt('UPDATE turns SET pgid=NULL,process_identity=NULL WHERE ended_at IS NOT NULL AND pgid IS NOT NULL').run() } catch (e) { this.degrade(e) }
+    try {
+      this.stmt('UPDATE turns SET pgid=NULL,process_identity=NULL WHERE ended_at IS NOT NULL AND pgid IS NOT NULL').run()
+      this.stmt(`UPDATE sessions SET native_ref=json_remove(native_ref,'$.process') WHERE closed_at IS NOT NULL AND json_extract(native_ref,'$.process') IS NOT NULL`).run()
+    } catch (e) { this.degrade(e) }
   }
 
   openSessions(): Row[] { return this.read(() => this.stmt('SELECT id FROM sessions WHERE closed_at IS NULL').all()) }

@@ -23,7 +23,7 @@ const OPENCODE_PERMISSION = {
 
 export const OPENCODE: AcpAgentSpec = {
   id: 'opencode',
-  displayName: 'opencode',
+  displayName: 'OpenCode',
   vendor: null,
   binary: 'opencode',
   args: ['acp'],

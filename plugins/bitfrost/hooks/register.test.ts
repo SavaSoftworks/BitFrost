@@ -383,6 +383,14 @@ test('with no models to offer, the helper\'s hint reaches the user', { timeoutMs
   expect(w.registered).toEqual([])
 })
 
+test('a Claude model from another app registers under a label that is never a real Claude model id', { timeoutMs: 20000 }, async ($, on) => {
+  const w = world(on)
+  const sonnet = { ...SOL, name: 'claude-sonnet-4-6', model: 'claude-sonnet-4-6', displayName: 'Claude Sonnet 4.6', provider: 'Anthropic', aliases: [], family: 'sonnet', harness: 'agy' }
+  w.fake.agentsReply = { agents: [SOL, sonnet], nameTable: NAME_TABLE, at: 1 }
+  await start($)
+  expect(w.registered.map((r: any) => r.model)).toEqual(['gpt-6-sol[1m]', 'agy-claude-sonnet-4-6[1m]'])
+})
+
 // Delivers the handback in a step's chunks, then runs the closing step after it.
 async function closeOut($: any, w: any, agentId: string, s: any, index: number) {
   const id = toolChunk(s.chunks).id

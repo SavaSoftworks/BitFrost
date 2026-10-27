@@ -252,7 +252,7 @@ main() {
   if [ -z "$previous" ]; then
     todo "Codex and ZCode work once installed and signed in. For GLM, also run once:"
     cmd "bitfrost setup zcode"
-    todo "opencode, Oh My Pi, Gemini CLI and Crush stay off until you turn them on with bitfrost config (or in $(short "$CONFIG"))"
+    todo "opencode, Oh My Pi, Gemini CLI, Crush, Grok Build and Antigravity stay off until you turn them on with bitfrost config (or in $(short "$CONFIG"))"
     todo "Setup for each app: https://github.com/$REPO/blob/main/GUIDE.md#setup"
   fi
 }

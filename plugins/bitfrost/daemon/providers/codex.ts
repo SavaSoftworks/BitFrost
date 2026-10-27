@@ -673,6 +673,7 @@ export const codexProvider: ProviderFactory = {
   id: 'codex',
   displayName: 'Codex',
   vendor: 'OpenAI',
+  firstClass: true,
   create(env: ProviderEnv) {
     const chosen = process.env.BITFROST_CODEX_BIN ?? env.config.bin ?? env.resolveBinary('codex')
     if (chosen) return new CodexAdapter(chosen, env.log, env.recorder('codex'))

@@ -624,6 +624,7 @@ export const zcodeProvider: ProviderFactory = {
   id: 'zcode',
   displayName: 'ZCode',
   vendor: 'Z.ai',
+  firstClass: true,
   detect: (env) => resolveZCode(env)?.location ?? null,
   create(env) {
     const installation = resolveZCode(env)

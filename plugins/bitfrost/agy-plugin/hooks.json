@@ -1,0 +1,6 @@
+{
+  "bitfrost-bridge": {
+    "PreToolUse": [{ "matcher": "*", "hooks": [{ "type": "command", "command": "./hook PreToolUse", "timeout": 604800 }] }],
+    "PreInvocation": [{ "type": "command", "command": "./hook PreInvocation", "timeout": 60 }]
+  }
+}

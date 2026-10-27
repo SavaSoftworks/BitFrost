@@ -98,7 +98,7 @@ function appStamp(p: Provider): string {
 // Allow and deny lists by app, from providers.<id>.models and providers.<id>.disabled.
 function lists(config: Config) {
   const pick = (key: string) => new Map(Object.entries(config.providers).filter(([, c]) => Array.isArray(c?.[key])).map(([id, c]) => [id, (c[key] as unknown[]).map(String)]))
-  return { allow: pick('models'), deny: pick('disabled') }
+  return { allow: pick('models'), deny: pick('disabled'), anthropic: pick('anthropic') }
 }
 
 const or = (names: string[]) => (names.length < 2 ? names.join('') : `${names.slice(0, -1).join(', ')} or ${names.at(-1)}`)
@@ -322,6 +322,11 @@ function serve() {
       .catch((e) => {
         log(`discovery: ${p.id} failed: ${(e as Error).message}`)
         lastErrors.set(p.id, (e as Error).message)
+        // A refused app loses its models at once instead of keeping the last good list.
+        if ((e as any).blocked) {
+          lastModels.delete(p.id)
+          lastModelsAt.delete(p.id)
+        }
       })
       .finally(() => listing.delete(p.id))
     listing.set(p.id, job)
@@ -340,7 +345,7 @@ function serve() {
       await Promise.all(late)
       const found = [...providers.values()].flatMap((p) => lastModels.get(p.id) ?? [])
       const ownVendors = new Map([...providers.values()].filter((p) => p.vendor).map((p) => [p.id, p.vendor!]))
-      const { allow, deny } = lists(config)
+      const { allow, deny, anthropic } = lists(config)
       const unlisted: string[] = []
       for (const p of providers.values()) {
         if (p.vendor || allow.has(p.id)) continue
@@ -348,7 +353,7 @@ function serve() {
         log(`discovery: ${p.id} offers ${n} models from many companies; none are used until config.json lists the wanted ones in providers.${p.id}.models`)
         unlisted.push(`${p.displayName} offers ${n} models; list the ones you want in providers.${p.id}.models.`)
       }
-      const agents = buildAgents(selectModels(found, ownVendors, allow, deny), ownVendors)
+      const agents = buildAgents(selectModels(found, ownVendors, allow, deny, anthropic), ownVendors)
       const hint = agents.length
         ? undefined
         : !providers.size
@@ -368,7 +373,7 @@ function serve() {
     const config = await syncProviders()
     const locations = await Promise.all(PROVIDERS.map((f) => detect(f, config)))
     return PROVIDERS.map((f, i) => ({ id: f.id, displayName: f.displayName, detected: !!locations[i], location: locations[i],
-      enabled: config.providers[f.id]?.enabled ?? !f.optIn, optIn: !!f.optIn, running: providers.has(f.id), mode: f.vendor ? 'deny' : 'allow' }))
+      enabled: config.providers[f.id]?.enabled ?? !f.optIn, optIn: !!f.optIn, firstClass: !!f.firstClass, running: providers.has(f.id), mode: f.vendor ? 'deny' : 'allow' }))
   }
 
   // Every model an app lists, with whether it's offered and why not.
@@ -388,11 +393,11 @@ function serve() {
     // A discovery already under way may have started before this app was on.
     const job = listing.get(id) ?? (lastModels.has(id) ? null : listProvider(p))
     if (job) await Promise.race([job, new Promise((r) => setTimeout(r, MODELS_WAIT_MS))])
-    const { allow, deny } = lists(config)
+    const { allow, deny, anthropic } = lists(config)
     const ownVendors = ownVendorsNow()
     const agents = registry?.agents ?? []
     const models = (lastModels.get(id) ?? []).map((m) => {
-      const reason = whyNot(m, ownVendors, allow, deny)
+      const reason = whyNot(m, ownVendors, allow, deny, anthropic)
       const blocked = reason === 'disabled' || reason === 'not_listed'
       return { model: m.model, displayName: m.displayName, company: m.provider, description: m.description, efforts: m.efforts, defaultEffort: m.defaultEffort,
         isDefault: m.isDefault, enabled: !blocked, offered: reason === null, reason, agent: agents.find((a) => a.harness === id && a.model === m.model)?.name ?? null }
@@ -825,7 +830,7 @@ usage: bitfrost <command>
   restart                   restart the helper, once no subagent is running
   migrate                   stop an idle helper and migrate the database now
   update                    install the latest release, if it's newer
-  uninstall [--yes]         remove BitFrost from Claude Code, ZCode and this machine
+  uninstall [--yes]         remove BitFrost from Claude Code, ZCode, Antigravity and this machine
     [--keep-config]         with --yes, keep your config
     [--keep-history]        with --yes, keep subagent history and usage stats
   config                    open the config screen (also a bare bitfrost on a terminal)

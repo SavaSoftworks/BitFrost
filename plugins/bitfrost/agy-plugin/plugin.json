@@ -1,0 +1,1 @@
+{ "name": "bitfrost-bridge", "version": "1.0.0", "description": "Passes Antigravity's tool calls and questions to BitFrost, in runs BitFrost starts. Does nothing otherwise." }

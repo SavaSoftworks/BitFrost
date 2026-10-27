@@ -150,21 +150,19 @@ function request(sock: string, method: string, url: string, body?: Json, timeout
   })
 }
 
-function killGroup(proc: ChildProcess, signal: NodeJS.Signals) {
+export function killGroup(proc: ChildProcess, signal: NodeJS.Signals) {
   if (!proc.pid || proc.exitCode !== null || proc.signalCode !== null) return false
   try { process.kill(-proc.pid, signal) } catch { try { proc.kill(signal) } catch { return false } }
   return true
 }
 
 // Allow only commands that cannot change anything; Crush runs some others unasked.
+// Git is left out: it runs programs named in repository config, which edits in the folder can set.
 const READ_ONLY = new Set(['pwd', 'ls', 'date', 'cal', 'df', 'du', 'free', 'groups', 'id', 'uname', 'uptime', 'whatis', 'whereis', 'which', 'whoami', 'type', 'echo'])
-const GIT_READ_ONLY = new Set(['status', 'diff', 'log', 'show', 'blame', 'ls-files', 'rev-parse', 'describe', 'shortlog'])
 
 export function readOnlyCommand(command: string): boolean {
   if (!command.trim() || /[><&|;`$\\\n\r'"]/.test(command)) return false
   const words = command.trim().split(/\s+/)
-  // Git can also read any file (--no-index, or a plain diff outside a repo), so paths stay inside the folder.
-  if (words[0] === 'git') return GIT_READ_ONLY.has(words[1]) && !words.slice(2).some((w) => /^(-c|-O|--output|--ext-diff|--textconv|--open-files-in-pager|--exec|--no-index|--contents)/.test(w) || /^[~/]|(^|[/=:])\.\.(\/|$)/.test(w))
   if (words[0] === 'date') return !words.some((w) => /^(-s|--set)/.test(w))
   return READ_ONLY.has(words[0])
 }

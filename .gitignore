@@ -10,3 +10,6 @@ dist/
 /tools/db-v3.ts
 /tools/db-v3.spec.ts
 /tools/README.md
+
+# ZCode writes its own ignore file into the folders it opens.
+.zcodeignore

@@ -511,6 +511,11 @@ def run(binary, broker, measure=False, snapshots=None, no_anim=False):
             key(b"\x1b[H")
             key(b"\r", 0.7)
             assert "Providers" in screen.text(), "Models page missing"
+            sidebar = ["".join(c[0] for c in row[4:24] if c[0] not in ("▀", "▄")).strip()
+                       for row in screen.cells[9:18]]
+            assert sidebar == ["Antigravity", "Codex", "Grok Build", "ZCode", "", "Crush",
+                               "Gemini CLI", "Oh My Pi", "OpenCode"], "Provider grouping or order is wrong: " + repr(sidebar)
+            key(b"s", 0.3)
             assert "All models" in "".join(
                 c[0] for c in screen.cells[16]
             ), "All models header moved unexpectedly"
@@ -541,19 +546,27 @@ def run(binary, broker, measure=False, snapshots=None, no_anim=False):
             )
             assert "codex/model-1" not in screen.text(), "Grouped model label retains its category prefix"
             screen.status_bar(sidebar=True)
-            key(b"w")
-            assert "Crush" in screen.selected(right=25), "Provider sidebar does not wrap upward"
+            key(b"\x1b[Hw")
+            assert "OpenCode" in screen.selected(right=25), "Provider sidebar does not wrap upward"
             key(b"s")
-            assert "Codex" in screen.selected(right=25), "Provider sidebar does not wrap downward"
+            assert "Antigravity" in screen.selected(right=25), "Provider sidebar does not wrap downward"
             key(b"\x1b[F")
-            assert "Crush" in screen.selected(right=25), "Sidebar End failed"
+            assert "OpenCode" in screen.selected(right=25), "Sidebar End failed"
             key(b"\x1b[H")
-            assert "Codex" in screen.selected(right=25), "Sidebar Home failed"
+            assert "Antigravity" in screen.selected(right=25), "Sidebar Home failed"
             key(b"\x1b[6~")
-            assert "Crush" in screen.selected(right=25), "Sidebar Page Down failed"
+            assert "OpenCode" in screen.selected(right=25), "Sidebar Page Down failed"
             key(b"\x1b[5~")
-            assert "Codex" in screen.selected(right=25), "Sidebar Page Up failed"
-            key(b"\x1b[Fw", 0.3)
+            assert "Antigravity" in screen.selected(right=25), "Sidebar Page Up failed"
+            key(b"s", 0.3)
+            assert "Codex" in screen.selected(right=25), "Returning to Codex failed"
+            key(b"ss")
+            assert "ZCode" in screen.selected(right=25), "Last first-class provider is wrong"
+            key(b"s")
+            assert "Crush" in screen.selected(right=25), "Down did not skip provider gap"
+            key(b"w")
+            assert "ZCode" in screen.selected(right=25), "Up did not skip provider gap"
+            key(b"\x1b[Fww", 0.3)
             key(b"\r")
             assert "None yet" in screen.text(), "Empty Enabled section placeholder missing"
             assert not "".join(
@@ -561,12 +574,11 @@ def run(binary, broker, measure=False, snapshots=None, no_anim=False):
             ).strip(), "None yet has no blank separator"
             key(b"\x1b[Z")
             assert "model-1" in screen.selected(left=27, bottom=22), "Tab selected an empty section"
-            key(b"q\x1b[H")
-            key(b"ss", 0.3)
+            key(b"q\x1b[F", 0.3)
             key(b"\r")
             assert (
-                "Enabled" in screen.text() and "Anthropic, never offered" not in screen.text()
-            ), "Enabled section includes blocked models"
+                "Enabled" in screen.text() and "claude-haiku-5-5" not in screen.text()
+            ), "Enabled section includes off Anthropic models"
             key(b"\x1b[Z")
             assert "All models" in screen.text(), "Tab did not jump to All models"
             key(b"w")
@@ -581,7 +593,7 @@ def run(binary, broker, measure=False, snapshots=None, no_anim=False):
             assert "Enabled" in screen.text(), "Shift-Tab did not jump to Enabled"
             key(b"\x1b[Z")
             assert "All models" in screen.text(), "Shift-Tab did not return to All models"
-            assert "Anthropic, never offered" in screen.text(), "Anthropic row reason missing"
+            assert "claude-haiku-5-5" in screen.text(), "Anthropic row missing from All models"
             assert "off" in screen.text() and "on" in screen.text(), "Model state columns missing"
             assert (
                 "Avg. session time" in screen.text() and "62m" in screen.text()
@@ -779,12 +791,9 @@ def run(binary, broker, measure=False, snapshots=None, no_anim=False):
             key(b"q")
             key(b"\x1b[H\x1b[Zsssssss\r", 0.2)
             assert (
-                "Anthropic, never offered" in screen.text() and "Avg. session time" in screen.text()
-            ), "Blocked model reason or bottom stats missing"
-            assert (
-                "> Enable" not in screen.text() and "> Disable" not in screen.text()
-            ), "Blocked popup exposes a toggle"
-            screen.save(snapshots, "anthropic-popup")
+                "> Enable" in screen.text() and "Avg. session time" in screen.text()
+            ), "Anthropic enable action or bottom stats missing"
+            screen.save(snapshots, "anthropic-toggle")
             writes_before = sum(
                 json.loads(line)["method"] == "models.set" for line in log.read_text().splitlines()
             )
@@ -792,15 +801,17 @@ def run(binary, broker, measure=False, snapshots=None, no_anim=False):
             writes_after = sum(
                 json.loads(line)["method"] == "models.set" for line in log.read_text().splitlines()
             )
-            assert writes_before == writes_after, "Blocked model wrote config"
+            assert writes_after == writes_before + 1, "Anthropic model did not write config"
+            requests = [json.loads(line) for line in log.read_text().splitlines()]
+            assert any(r["method"] == "models.set" and r["params"]["model"] == "opencode/claude-haiku-5-5"
+                       and r["params"]["enabled"] is True for r in requests), "Anthropic enable write is wrong"
+            key(b"\r")
+            assert "> Disable" in screen.text(), "Anthropic row did not become enabled"
             key(b"q")
             key(b"s\r", 0.2)
             assert (
-                "Anthropic, never offered" in screen.text() and "Avg. session time" in screen.text()
-            ), "Blocked row reason or bottom stats missing"
-            assert (
-                "> Enable" not in screen.text() and "> Disable" not in screen.text()
-            ), "Blocked model popup exposes a toggle"
+                "> Enable" in screen.text() and "Avg. session time" in screen.text()
+            ), "Second Anthropic row is not toggleable"
             key(b"q")
             key(b"q")
             key(b"q", 0.3)
@@ -818,7 +829,7 @@ def run(binary, broker, measure=False, snapshots=None, no_anim=False):
             assert "General" in screen.selected(right=25), "Settings sidebar End and Page Up failed"
             key(b"\x1b[6~")
             assert "Harnesses" in screen.selected(right=25), "Settings sidebar Page Down failed"
-            assert "".join(c[0] for c in screen.cells[5][28:33]) == "Codex", "Harness heading moved unexpectedly"
+            assert "".join(c[0] for c in screen.cells[5][28:39]) == "Antigravity", "Harness heading moved unexpectedly"
             wait_for(lambda: screen.cells[5][28][1] == (182, 197, 210), "Harness heading did not finish fading in")
             assert screen.cells[5][28][1] == (182, 197, 210) and screen.cells[6][28][1] == (78, 173, 245), (
                 "Harness headings and inactive labels have the wrong colors"
@@ -840,16 +851,16 @@ def run(binary, broker, measure=False, snapshots=None, no_anim=False):
             assert screen.selected(left=27) == before, "Harness heading click changed selection"
             key(b"w")
             assert "Location: not found" in screen.selected(left=27) and (
-                "".join(c[0] for c in screen.cells[25][28:33]) == "Crush"
-            ), "Settings items do not wrap upward to Crush Location"
+                "".join(c[0] for c in screen.cells[31][28:36]) == "OpenCode"
+            ), "Settings items do not wrap upward to OpenCode Location"
             key(b"s")
-            assert "Status: Enabled" in screen.selected(left=27) and (
-                "".join(c[0] for c in screen.cells[5][28:33]) == "Codex"
-            ), "Settings items do not wrap downward to Codex Status"
+            assert "Status: Disabled" in screen.selected(left=27) and (
+                "".join(c[0] for c in screen.cells[5][28:39]) == "Antigravity"
+            ), "Settings items do not wrap downward to Antigravity Status"
             key(b"\x1b[F")
             assert "Location: not found" in screen.selected(left=27), "Settings items End failed"
             key(b"\x1b[H")
-            assert "Codex" in "".join(c[0] for c in screen.cells[5][27:116]), "Settings Home hid the first heading"
+            assert "Antigravity" in "".join(c[0] for c in screen.cells[5][27:116]), "Settings Home hid the first heading"
             fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 20, 80, 0, 0))
             screen = Screen(80, 20)
             os.kill(process.pid, signal.SIGWINCH)
@@ -857,12 +868,12 @@ def run(binary, broker, measure=False, snapshots=None, no_anim=False):
             key(b"\x1b[6~")
             assert (
                 "Location: not found" in screen.selected(left=19, bottom=14)
-                and "opencode" in "".join(c[0] for c in screen.cells[11][19:76])
-            ), "Settings Page Down did not jump nine grouped rows to opencode Location"
+                and "Grok Build" in "".join(c[0] for c in screen.cells[11][19:76])
+            ), "Settings Page Down did not jump nine grouped rows to Grok Build Location"
             key(b"\x1b[5~")
-            assert "Status: Enabled" in screen.selected(left=19, bottom=14) and (
-                "Codex" in "".join(c[0] for c in screen.cells[5][19:76])
-            ), "Settings Page Up failed to restore Codex and its first item"
+            assert "Status: Disabled" in screen.selected(left=19, bottom=14) and (
+                "Antigravity" in "".join(c[0] for c in screen.cells[5][19:76])
+            ), "Settings Page Up failed to restore Antigravity and its first item"
             fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 120, 0, 0))
             screen = Screen()
             os.kill(process.pid, signal.SIGWINCH)
@@ -1146,7 +1157,12 @@ def run_mouse_path(binary, no_anim):
             drain(0.35)
             report(0, 56, 24, 0.7)
             assert "Providers" in screen.text(), "Mouse home click did not open Models"
-            report(0, 5, 11, 0.4)
+            before = screen.selected(right=25)
+            requests_before = sum(json.loads(line)["method"] == "models.list" for line in log.read_text().splitlines())
+            report(0, 5, 13, 0.4)
+            assert screen.selected(right=25) == before, "Gap click changed provider selection"
+            assert sum(json.loads(line)["method"] == "models.list" for line in log.read_text().splitlines()) == requests_before, "Gap click requested models"
+            report(0, 5, 17, 0.4)
             assert "OpenCode" in screen.selected(right=25), "Mouse did not select provider"
             report(0, 32, 6)
             assert "> Disable" not in screen.text(), "Category heading click opened a model popup"

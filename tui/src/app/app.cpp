@@ -6,9 +6,9 @@
 
 #include "app.hpp"
 #include "metadata.hpp"
-#include "rpc/protocol.hpp"
 #include "ui/list.hpp"
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <cmath>
 
@@ -269,6 +269,25 @@ namespace bf {
         } else if (request_info.method == "providers.list") {
             std::string previous = provider()["id"].str();
             providers = result["providers"].array();
+            std::stable_sort(providers.begin(), providers.end(), [](const Json &left, const Json &right) {
+                bool first = left["firstClass"].boolean(), other = right["firstClass"].boolean();
+                if (first != other) {
+                    return first;
+                }
+                auto name = [](const Json &entry) {
+                    std::string value = entry["displayName"].str();
+                    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char ch) {
+                        return char(std::tolower(ch));
+                    });
+                    return value;
+                };
+                return name(left) < name(right);
+            });
+            std::vector<std::string> groups;
+            for (const Json &entry : providers) {
+                groups.push_back(entry["firstClass"].boolean() ? "first" : "other");
+            }
+            provider_view.reset(groups, false);
             move(provider_selection, 0, providers.size());
             for (size_t index = 0; index < providers.size(); ++index) {
                 if (providers[index]["id"].str() == previous) {
@@ -615,7 +634,7 @@ namespace bf {
         if (focus.back() == Focus::Sidebar) {
             if (current == Page::Models) {
                 int previous_selection = provider_selection;
-                provider_view.input(provider_selection, event.key, int(providers.size()), sidebar_visible);
+                provider_view.input(provider_selection, event.key, sidebar_visible);
                 if (previous_selection != provider_selection) {
                     models.clear();
                     model_rows.reset(models, false);
@@ -645,7 +664,7 @@ namespace bf {
         }
         if (current == Page::Models) {
             if (focus.back() == Focus::Popup) {
-                if (event.key == Key::Enter && !model().null() && model_toggle_allowed(model())) {
+                if (event.key == Key::Enter && !model().null()) {
                     saving = true;
                     message = "Saving...";
                     request(
